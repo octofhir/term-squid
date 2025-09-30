@@ -1,0 +1,174 @@
+name: Release CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and Release CLI
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: term-squid-cli
+            asset_name: term-squid-cli-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: term-squid-cli
+            asset_name: term-squid-cli-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: term-squid-cli
+            asset_name: term-squid-cli-aarch64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build CLI binary
+        run: cargo build --release -p term-squid-cli --target ${{ matrix.target }}
+
+      - name: Create release archive
+        run: |
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/term-squid-cli release/
+          cd release
+          tar -czf ../${{ matrix.asset_name }}.tar.gz term-squid-cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.tar.gz
+
+  create-release:
+    name: Create Release
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current version
+        id: get_version
+        run: |
+          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Bump version
+        id: bump_version
+        run: |
+          CURRENT_VERSION="${{ steps.get_version.outputs.current_version }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          case "${{ github.event.inputs.bump_type }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+          # Update version in Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+
+      - name: Commit version bump
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }} [skip ci]"
+          git tag -a "cli-v${{ steps.bump_version.outputs.new_version }}" -m "CLI release v${{ steps.bump_version.outputs.new_version }}"
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+          tags: true
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: cli-v${{ steps.bump_version.outputs.new_version }}
+          name: CLI v${{ steps.bump_version.outputs.new_version }}
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.tar.gz
+          body: |
+            ## CLI Release v${{ steps.bump_version.outputs.new_version }}
+
+            ### Changes
+            - Version bump: ${{ github.event.inputs.bump_type }}
+
+            ### Installation
+
+            #### Linux (x86_64)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/cli-v${{ steps.bump_version.outputs.new_version }}/term-squid-cli-x86_64-unknown-linux-gnu.tar.gz | tar xz
+            sudo mv term-squid-cli /usr/local/bin/
+            ```
+
+            #### macOS (Intel)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/cli-v${{ steps.bump_version.outputs.new_version }}/term-squid-cli-x86_64-apple-darwin.tar.gz | tar xz
+            sudo mv term-squid-cli /usr/local/bin/
+            ```
+
+            #### macOS (Apple Silicon)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/cli-v${{ steps.bump_version.outputs.new_version }}/term-squid-cli-aarch64-apple-darwin.tar.gz | tar xz
+            sudo mv term-squid-cli /usr/local/bin/
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,133 @@
+.app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--color-bg-subtle);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  transition: width var(--transition-base);
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-width-collapsed);
+}
+
+.sidebarHeader {
+  height: var(--header-height);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.9375rem; /* 15px */
+  font-weight: 600;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.logoImage {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.nav {
+  flex: 1;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  transition: all var(--transition-fast);
+  font-size: 0.875rem; /* 14px */
+  font-weight: 500;
+  text-decoration: none;
+  user-select: none;
+}
+
+.navItem:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.navItem.active {
+  background: var(--color-bg-active);
+  color: var(--color-text-primary);
+}
+
+.navItem svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.toggleButton {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.toggleButton:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+
+.toggleButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--content-padding);
+  background: var(--color-bg);
+}
+
+/* Responsive padding for wide screens */
+@media (min-width: 1280px) {
+  .main {
+    padding: var(--space-10) var(--space-12);
+  }
+}
+
+@media (min-width: 1536px) {
+  .main {
+    padding: var(--space-12) var(--space-16);
+  }
+}
+
+@media (min-width: 1920px) {
+  .main {
+    padding: var(--space-16) var(--space-20);
+  }
+}
