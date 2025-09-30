@@ -22,6 +22,7 @@ pub struct SubsumesParams {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum SubsumptionOutcome {
     Equivalent,
     Subsumes,
