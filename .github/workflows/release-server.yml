@@ -103,7 +103,8 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml
+          git add -f Cargo.lock
           git commit -m "chore: bump version to ${{ steps.bump_version.outputs.new_version }} [skip ci]"
           git tag -a "server-v${{ steps.bump_version.outputs.new_version }}" -m "Server release v${{ steps.bump_version.outputs.new_version }}"
 
