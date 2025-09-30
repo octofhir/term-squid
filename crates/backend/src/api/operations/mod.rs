@@ -11,10 +11,7 @@ pub use translate::*;
 pub use validate::*;
 
 use crate::store::TerminologyStore;
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
 use std::sync::Arc;
 
 pub fn operation_routes() -> Router<Arc<dyn TerminologyStore>> {

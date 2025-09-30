@@ -9,11 +9,10 @@ pub async fn create_code_system(pool: PgPool, file_path: String) -> Result<()> {
     info!("Creating CodeSystem from file: {}", file_path);
 
     // Read and parse the JSON file
-    let content = fs::read_to_string(&file_path)
-        .context(format!("Failed to read file: {file_path}"))?;
+    let content =
+        fs::read_to_string(&file_path).context(format!("Failed to read file: {file_path}"))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .context("Failed to parse JSON")?;
+    let json: serde_json::Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
 
     // Validate resource type
     let resource_type = json["resourceType"]
@@ -123,11 +122,10 @@ pub async fn create_value_set(pool: PgPool, file_path: String) -> Result<()> {
     info!("Creating ValueSet from file: {}", file_path);
 
     // Read and parse the JSON file
-    let content = fs::read_to_string(&file_path)
-        .context(format!("Failed to read file: {file_path}"))?;
+    let content =
+        fs::read_to_string(&file_path).context(format!("Failed to read file: {file_path}"))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .context("Failed to parse JSON")?;
+    let json: serde_json::Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
 
     // Validate resource type
     let resource_type = json["resourceType"]
@@ -208,11 +206,10 @@ pub async fn create_concept_map(pool: PgPool, file_path: String) -> Result<()> {
     info!("Creating ConceptMap from file: {}", file_path);
 
     // Read and parse the JSON file
-    let content = fs::read_to_string(&file_path)
-        .context(format!("Failed to read file: {file_path}"))?;
+    let content =
+        fs::read_to_string(&file_path).context(format!("Failed to read file: {file_path}"))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .context("Failed to parse JSON")?;
+    let json: serde_json::Value = serde_json::from_str(&content).context("Failed to parse JSON")?;
 
     // Validate resource type
     let resource_type = json["resourceType"]

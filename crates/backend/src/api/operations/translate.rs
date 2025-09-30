@@ -227,9 +227,7 @@ async fn perform_translate(
     if matches.is_empty() {
         result_params.push(Parameter::string(
             "message",
-            format!(
-                "No translation found for code '{source_code}' in system '{source_system}'"
-            ),
+            format!("No translation found for code '{source_code}' in system '{source_system}'"),
         ));
     } else {
         result_params.extend(matches);
