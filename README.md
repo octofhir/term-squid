@@ -1,6 +1,11 @@
-# term-squid - FHIR Terminology Server
+<p align="center"><img src=".github/banner.png" alt="octo/term-squid — A FHIR terminology server on Rust and PostgreSQL" width="100%"></p>
 
-A modern, high-performance FHIR Terminology Service built with Rust (Axum) and SolidJS.
+<p align="center"><b>A read-only FHIR terminology server for R4, R5 and R6, on Rust (Axum), PostgreSQL and a SolidJS UI.</b></p>
+
+<p align="center">
+  <a href="https://github.com/octofhir/term-squid/actions/workflows/ci.yml"><img src="https://github.com/octofhir/term-squid/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 ## Status
 
@@ -33,7 +38,7 @@ A modern, high-performance FHIR Terminology Service built with Rust (Axum) and S
 
 1. **Clone the repository**
 ```bash
-git clone <repo-url>
+git clone https://github.com/octofhir/term-squid.git
 cd term-squid
 ```
 
@@ -349,9 +354,9 @@ just docker-run
 
 ### Environment Variables
 
-- `DATABASE_URL` - PostgreSQL connection string (required)
-- `HOST` - Server host (default: `0.0.0.0`)
-- `PORT` - Server port (default: `8081`)
+- `DATABASE_URL` - PostgreSQL connection string (default: `postgresql://termserver:dev_password@localhost:5433/termserver`)
+- `SERVER_HOST` - Server host (default: `127.0.0.1`)
+- `SERVER_PORT` - Server port (default: `8081`)
 - `RUST_LOG` - Log level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`)
 
 ## Development Workflow
@@ -521,9 +526,16 @@ just build
 lsof -i :8081
 
 # Or change port in .env
-echo "PORT=8082" >> .env
+echo "SERVER_PORT=8082" >> .env
 ```
 
 ## License
 
-MIT
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

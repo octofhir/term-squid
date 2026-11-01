@@ -6,8 +6,7 @@ resolver = "2"
 version = "0.1.2"
 edition = "2021"
 authors = ["OctoFHIR Team"]
-license = "MIT"
-
+license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # Web Framework
 axum = "0.8"
