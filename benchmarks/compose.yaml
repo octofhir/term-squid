@@ -1,0 +1,19 @@
+name: term-squid-bench
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: term_squid_benchmark
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+    ports:
+      - "127.0.0.1:15433:5432"
+    volumes:
+      - benchmark_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark -d term_squid_benchmark"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  benchmark_postgres:

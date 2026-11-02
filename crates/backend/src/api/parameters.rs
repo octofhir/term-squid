@@ -79,7 +79,18 @@ impl Parameters {
 
     pub fn get_string(&self, name: &str) -> Option<&str> {
         match self.get_parameter(name)?.value.as_ref()? {
-            ParameterValue::ValueString(s) => Some(s),
+            ParameterValue::ValueString(s)
+            | ParameterValue::ValueUri(s)
+            | ParameterValue::ValueUrl(s)
+            | ParameterValue::ValueCanonical(s)
+            | ParameterValue::ValueCode(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn get_integer(&self, name: &str) -> Option<i64> {
+        match self.get_parameter(name)?.value.as_ref()? {
+            ParameterValue::ValueInteger(n) => Some(*n),
             _ => None,
         }
     }

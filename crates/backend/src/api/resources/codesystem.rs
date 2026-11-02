@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::{CodeSystem, SearchParams};
+use crate::models::SearchParams;
 use crate::store::TerminologyStore;
 
 pub fn codesystem_routes() -> Router<Arc<dyn TerminologyStore>> {
@@ -47,7 +47,7 @@ impl From<SearchQuery> for SearchParams {
 async fn get_codesystem(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<String>,
-) -> Result<Json<CodeSystem>, AppError> {
+) -> Result<Json<Value>, AppError> {
     // Try to parse as UUID first, otherwise treat as URL
     let code_system = if let Ok(uuid) = Uuid::parse_str(&id) {
         store.get_code_system_by_id(&uuid).await?
@@ -57,7 +57,7 @@ async fn get_codesystem(
 
     code_system
         .ok_or_else(|| AppError::NotFound("CodeSystem not found".to_string()))
-        .map(Json)
+        .map(|resource| Json(resource.content.0))
 }
 
 async fn search_codesystems(

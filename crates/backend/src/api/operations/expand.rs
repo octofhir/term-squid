@@ -14,6 +14,8 @@ use crate::store::TerminologyStore;
 #[derive(Debug, Deserialize)]
 pub struct ExpandParams {
     pub url: Option<String>,
+    #[serde(rename = "valueSetVersion")]
+    pub value_set_version: Option<String>,
     pub filter: Option<String>,
     pub offset: Option<i64>,
     pub count: Option<i64>,
@@ -29,7 +31,7 @@ pub async fn expand_get(
         .clone()
         .ok_or_else(|| AppError::BadRequest("url parameter required".to_string()))?;
 
-    perform_expand(store, &url, params).await
+    perform_expand(store, &url, params, None).await
 }
 
 /// POST /ValueSet/$expand with Parameters body
@@ -44,12 +46,13 @@ pub async fn expand_post(
 
     let expand_params = ExpandParams {
         url: Some(url.to_string()),
+        value_set_version: params.get_string("valueSetVersion").map(str::to_owned),
         filter: params.get_string("filter").map(|s| s.to_string()),
-        offset: None,
-        count: None,
+        offset: params.get_integer("offset"),
+        count: params.get_integer("count"),
     };
 
-    perform_expand(store, url, expand_params).await
+    perform_expand(store, url, expand_params, None).await
 }
 
 /// GET /ValueSet/{id}/$expand
@@ -58,12 +61,7 @@ pub async fn expand_instance_get(
     Path(id): Path<Uuid>,
     Query(params): Query<ExpandParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let value_set = store
-        .get_value_set_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ValueSet {id} not found")))?;
-
-    perform_expand(store, &value_set.url, params).await
+    perform_expand(store, "urn:term-squid:instance", params, Some(id)).await
 }
 
 /// POST /ValueSet/{id}/$expand with Parameters body
@@ -72,51 +70,50 @@ pub async fn expand_instance_post(
     Path(id): Path<Uuid>,
     Json(params): Json<Parameters>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let value_set = store
-        .get_value_set_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ValueSet {id} not found")))?;
-
     let expand_params = ExpandParams {
-        url: Some(value_set.url.clone()),
-        filter: params.get_string("filter").map(|s| s.to_string()),
-        offset: None,
-        count: None,
+        url: None,
+        value_set_version: params.get_string("valueSetVersion").map(str::to_owned),
+        filter: params.get_string("filter").map(str::to_owned),
+        offset: params.get_integer("offset"),
+        count: params.get_integer("count"),
     };
-
-    perform_expand(store, &value_set.url, expand_params).await
+    perform_expand(store, "urn:term-squid:instance", expand_params, Some(id)).await
 }
 
 async fn perform_expand(
     store: Arc<dyn TerminologyStore>,
     url: &str,
     params: ExpandParams,
+    id: Option<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get the ValueSet
-    let value_set = store
-        .get_value_set(url, None)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ValueSet '{url}' not found")))?;
-
-    // Get the expansion from the database
-    let mut expansion_entries = store
-        .get_value_set_expansion(&value_set.id)
-        .await?
-        .unwrap_or_default();
-
-    // Apply filter if provided
-    if let Some(filter_text) = &params.filter {
-        let filter_lower = filter_text.to_lowercase();
-        expansion_entries.retain(|entry| {
-            if let Some(display) = entry.get("display").and_then(|v| v.as_str()) {
-                display.to_lowercase().contains(&filter_lower)
-            } else if let Some(code) = entry.get("code").and_then(|v| v.as_str()) {
-                code.to_lowercase().contains(&filter_lower)
-            } else {
-                false
-            }
-        });
+    if params.offset.is_some_and(|n| n < 0)
+        || params.count.is_some_and(|n| !(0..=10000).contains(&n))
+    {
+        return Err(AppError::BadRequest(
+            "offset must be nonnegative and count must be between 0 and 10000".into(),
+        ));
     }
+    let expanded = if let Some(id) = id {
+        store.expand_compose_by_id(&id).await?
+    } else {
+        store
+            .expand_compose(url, params.value_set_version.as_deref())
+            .await?
+    };
+    let filter = params.filter.as_ref().map(|s| s.to_lowercase());
+    let expansion_entries: Vec<_> = expanded
+        .members
+        .into_values()
+        .filter(|entry| {
+            filter.as_ref().is_none_or(|f| {
+                entry.code.to_lowercase().contains(f)
+                    || entry
+                        .display
+                        .as_ref()
+                        .is_some_and(|d| d.to_lowercase().contains(f))
+            })
+        })
+        .collect();
 
     let total = expansion_entries.len();
 
@@ -141,7 +138,7 @@ async fn perform_expand(
     });
 
     // Extract the base ValueSet content and add expansion
-    let mut result = value_set.content.0.clone();
+    let mut result = expanded.resource;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("expansion".to_string(), expansion);
     }

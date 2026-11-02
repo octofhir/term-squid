@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/HealthSamurai/tx-benchmark.git",
+  "commit": "78bdffa769e21ac5d654f5dad412d1becf9d7e57",
+  "tests": ["FS01", "LK01", "LK02", "LK03", "LK04", "LK05", "VC01", "VC02", "VC03", "EX01", "EX02", "EX03", "EX04", "EX05", "EX06", "EX07", "EX08", "SS01", "CM01", "CM02"]
+}

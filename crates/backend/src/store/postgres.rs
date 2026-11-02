@@ -1,5 +1,7 @@
 use crate::error::AppError;
-use crate::models::{CodeSystem, Concept, ConceptMap, SearchParams, ValueSet};
+use crate::models::{
+    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, SearchParams, ValueSet,
+};
 use crate::store::TerminologyStore;
 use async_trait::async_trait;
 use sqlx::PgPool;
@@ -8,16 +10,195 @@ use uuid::Uuid;
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
+    compose_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            compose_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+        }
+    }
+    async fn resolve_row(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code: &str,
+        id: Option<Uuid>,
+    ) -> Result<Option<ResolvedConcept>, AppError> {
+        // A missing concept still returns system metadata, distinguishing unknown content.
+        Ok(sqlx::query_as::<_, ResolvedConcept>(r#"
+            SELECT s.id, s.hierarchy_meaning, s.name, s.version, s.content_mode, c.code, c.display, c.definition, c.properties
+            FROM (SELECT id, hierarchy_meaning, name, version, content_mode, case_sensitive FROM code_systems
+                  WHERE ($4::uuid IS NOT NULL AND id = $4) OR ($4::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
+                  ORDER BY updated_at DESC, id LIMIT 1) s
+            LEFT JOIN LATERAL (
+                SELECT code, display, definition, properties FROM concepts
+                WHERE code_system_id = s.id AND
+                    ((s.case_sensitive AND code = $3) OR
+                     (NOT s.case_sensitive AND lower(code) = lower($3)))
+                LIMIT 1
+            ) c ON true
+        "#).bind(url).bind(version).bind(code).bind(id)
+            .fetch_optional(&self.pool).await?)
+    }
+    async fn compose_snapshot(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<Uuid>,
+        system_context: Option<(&str, &str)>,
+    ) -> Result<ExpandedValueSet, AppError> {
+        use std::collections::BTreeSet;
+        use term_squid_core::{Canonical, Compose, PreparedSystem, Snapshot, MAX_RESOURCES};
+        let slot = self
+            .compose_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+        let root = Canonical::parse(url, version)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let mut snapshot = Snapshot::default();
+        let mut raw_systems = std::collections::BTreeMap::new();
+        let mut bytes_remaining: i64 = 32 * 1024 * 1024;
+        let mut pending = vec![root.clone()];
+        let mut seen = BTreeSet::new();
+        let mut base_resource = None;
+        while let Some(key) = pending.pop() {
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            if seen.len() + raw_systems.len() > MAX_RESOURCES {
+                return Err(AppError::BadRequest(
+                    "Compose resource limit exceeded".into(),
+                ));
+            }
+            let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
+                "SELECT CASE WHEN octet_length(content::text) <= $4 THEN content END, octet_length(content::text)::bigint FROM value_sets WHERE ($3::uuid IS NOT NULL AND id = $3) OR ($3::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2)) ORDER BY updated_at DESC, id LIMIT 1")
+                .bind(&key.url).bind(&key.version).bind(if key == root { id } else { None }).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
+            let row = row.ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "ValueSet {} version {:?} not found",
+                    key.url, key.version
+                ))
+            })?;
+            bytes_remaining -= row.1;
+            let resource = row
+                .0
+                .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
+                .0;
+            if key == root {
+                base_resource = Some(resource.clone());
+            }
+            let compose: Compose =
+                serde_json::from_value(resource.get("compose").cloned().ok_or_else(|| {
+                    AppError::BadRequest("ValueSet without compose is not supported".into())
+                })?)
+                .map_err(|e| AppError::BadRequest(format!("Invalid compose: {e}")))?;
+            let (systems, imports) = compose.dependencies()?;
+            pending.extend(imports);
+            for system in systems {
+                if raw_systems.contains_key(&system) {
+                    continue;
+                }
+                if seen.len() + raw_systems.len() >= MAX_RESOURCES {
+                    return Err(AppError::BadRequest(
+                        "Compose resource limit exceeded".into(),
+                    ));
+                }
+                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
+                    "SELECT CASE WHEN octet_length(content::text) <= $3 THEN content END, octet_length(content::text)::bigint FROM code_systems WHERE url = $1 AND ($2::text IS NULL OR version = $2) ORDER BY updated_at DESC, id LIMIT 1")
+                    .bind(&system.url).bind(system.version.as_deref().or_else(|| system_context.filter(|(url, _)| *url == system.url).map(|(_, version)| version))).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
+                let row = row.ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "CodeSystem {} version {:?} not found",
+                        system.url, system.version
+                    ))
+                })?;
+                bytes_remaining -= row.1;
+                let resource = row
+                    .0
+                    .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
+                    .0;
+                raw_systems.insert(system, resource);
+            }
+            snapshot.value_sets.insert(key, compose);
+        }
+        tx.commit().await?;
+        tokio::task::spawn_blocking(move || -> Result<ExpandedValueSet, AppError> {
+            let _slot = slot;
+            let mut concept_count = 0;
+            for (key, resource) in raw_systems {
+                let definition = serde_json::from_value(resource)
+                    .map_err(|e| AppError::BadRequest(format!("Invalid CodeSystem: {e}")))?;
+                let prepared = PreparedSystem::prepare(definition)?;
+                concept_count += prepared.concepts.len();
+                if concept_count > term_squid_core::MAX_CONCEPTS {
+                    return Err(AppError::BadRequest(
+                        "Snapshot concept limit exceeded".into(),
+                    ));
+                }
+                snapshot.systems.insert(key, prepared);
+            }
+            Ok(ExpandedValueSet {
+                resource: base_resource.expect("Root is resolved"),
+                members: snapshot.expand(&root)?,
+            })
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
     }
 }
 
 #[async_trait]
 impl TerminologyStore for PostgresStore {
+    async fn resolve_concept(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code: &str,
+    ) -> Result<Option<ResolvedConcept>, AppError> {
+        let canonical = term_squid_core::Canonical::parse(url, version)?;
+        self.resolve_row(&canonical.url, canonical.version.as_deref(), code, None)
+            .await
+    }
+    async fn resolve_concept_by_id(
+        &self,
+        id: &Uuid,
+        code: &str,
+    ) -> Result<Option<ResolvedConcept>, AppError> {
+        self.resolve_row("", None, code, Some(*id)).await
+    }
+
+    async fn expand_compose(
+        &self,
+        url: &str,
+        version: Option<&str>,
+    ) -> Result<ExpandedValueSet, AppError> {
+        self.compose_snapshot(url, version, None, None).await
+    }
+    async fn expand_compose_by_id(&self, id: &Uuid) -> Result<ExpandedValueSet, AppError> {
+        self.compose_snapshot("urn:term-squid:instance", None, Some(*id), None)
+            .await
+    }
+
+    async fn compose_for_validation(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<Uuid>,
+        system: &str,
+        system_version: Option<&str>,
+    ) -> Result<ExpandedValueSet, AppError> {
+        self.compose_snapshot(url, version, id, system_version.map(|v| (system, v)))
+            .await
+    }
+
     // ========== CodeSystem operations ==========
 
     async fn create_code_system(&self, cs: CodeSystem) -> Result<CodeSystem, AppError> {
@@ -45,6 +226,9 @@ impl TerminologyStore for PostgresStore {
         url: &str,
         version: Option<&str>,
     ) -> Result<Option<CodeSystem>, AppError> {
+        let canonical = term_squid_core::Canonical::parse(url, version)?;
+        let url = canonical.url.as_str();
+        let version = canonical.version.as_deref();
         let result = match version {
             Some(v) => {
                 sqlx::query_as::<_, CodeSystem>(
@@ -199,6 +383,9 @@ impl TerminologyStore for PostgresStore {
         url: &str,
         version: Option<&str>,
     ) -> Result<Option<ValueSet>, AppError> {
+        let canonical = term_squid_core::Canonical::parse(url, version)?;
+        let url = canonical.url.as_str();
+        let version = canonical.version.as_deref();
         let result = match version {
             Some(v) => {
                 sqlx::query_as::<_, ValueSet>(
@@ -350,6 +537,9 @@ impl TerminologyStore for PostgresStore {
         url: &str,
         version: Option<&str>,
     ) -> Result<Option<ConceptMap>, AppError> {
+        let canonical = term_squid_core::Canonical::parse(url, version)?;
+        let url = canonical.url.as_str();
+        let version = canonical.version.as_deref();
         let result =
             match version {
                 Some(v) => {
@@ -556,7 +746,7 @@ impl TerminologyStore for PostgresStore {
         value_set_id: &uuid::Uuid,
     ) -> Result<Option<Vec<serde_json::Value>>, AppError> {
         let expansion = sqlx::query_as::<_, (sqlx::types::Json<serde_json::Value>,)>(
-            "SELECT expansion FROM value_set_expansions WHERE value_set_id = $1",
+            "SELECT expansion_data FROM value_set_expansions WHERE value_set_id = $1 ORDER BY created_at DESC, id LIMIT 1",
         )
         .bind(value_set_id)
         .fetch_optional(&self.pool)

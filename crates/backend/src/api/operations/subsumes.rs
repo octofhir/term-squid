@@ -45,7 +45,15 @@ pub async fn subsumes_get(
         .code_b
         .ok_or_else(|| AppError::BadRequest("codeB parameter required".to_string()))?;
 
-    perform_subsumes(store, &system, &code_a, &code_b, params.version.as_deref()).await
+    perform_subsumes(
+        store,
+        &system,
+        &code_a,
+        &code_b,
+        params.version.as_deref(),
+        None,
+    )
+    .await
 }
 
 /// POST /CodeSystem/$subsumes with Parameters body
@@ -67,7 +75,7 @@ pub async fn subsumes_post(
         .ok_or_else(|| AppError::BadRequest("codeB parameter required".to_string()))?;
     let version = params.get_string("version");
 
-    perform_subsumes(store, system, code_a, code_b, version).await
+    perform_subsumes(store, system, code_a, code_b, version, None).await
 }
 
 /// GET /CodeSystem/{id}/$subsumes?codeA=...&codeB=...
@@ -83,12 +91,7 @@ pub async fn subsumes_instance_get(
         .code_b
         .ok_or_else(|| AppError::BadRequest("codeB parameter required".to_string()))?;
 
-    let code_system = store
-        .get_code_system_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_subsumes(store, &code_system.url, &code_a, &code_b, None).await
+    perform_subsumes(store, "", &code_a, &code_b, None, Some(id)).await
 }
 
 /// POST /CodeSystem/{id}/$subsumes with Parameters body
@@ -106,12 +109,7 @@ pub async fn subsumes_instance_post(
         .or_else(|| params.get_code("codeB"))
         .ok_or_else(|| AppError::BadRequest("codeB parameter required".to_string()))?;
 
-    let code_system = store
-        .get_code_system_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_subsumes(store, &code_system.url, code_a, code_b, None).await
+    perform_subsumes(store, "", code_a, code_b, None, Some(id)).await
 }
 
 async fn perform_subsumes(
@@ -120,29 +118,28 @@ async fn perform_subsumes(
     code_a: &str,
     code_b: &str,
     version: Option<&str>,
+    id: Option<Uuid>,
 ) -> Result<Json<Parameters>, AppError> {
-    // Get the CodeSystem
-    let code_system = store
-        .get_code_system(system, version)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("CodeSystem '{system}' not found")))?;
-
-    // Check if both codes exist
-    let concept_a = store.get_concept(&code_system.id, code_a).await?;
-    let concept_b = store.get_concept(&code_system.id, code_b).await?;
-
-    if concept_a.is_none() {
-        return Err(AppError::NotFound(format!(
-            "Code '{code_a}' not found in system '{system}'"
-        )));
+    let resolved = if let Some(id) = id {
+        store.resolve_concept_by_id(&id, code_a).await?
+    } else {
+        store.resolve_concept(system, version, code_a).await?
     }
-
-    if concept_b.is_none() {
-        return Err(AppError::NotFound(format!(
-            "Code '{code_b}' not found in system '{system}'"
-        )));
+    .ok_or_else(|| AppError::NotFound(format!("CodeSystem '{system}' not found")))?;
+    if resolved.hierarchy_meaning.as_deref() != Some("is-a") {
+        return Err(AppError::BadRequest(
+            "Subsumption requires an is-a hierarchy".into(),
+        ));
     }
-
+    let other = store.resolve_concept_by_id(&resolved.id, code_b).await?;
+    if resolved.code.is_none() || other.as_ref().is_none_or(|c| c.code.is_none()) {
+        return Err(AppError::NotFound("Subsumption code not found".into()));
+    }
+    let code_a = resolved.code.as_deref().expect("Code existence checked");
+    let code_b = other
+        .as_ref()
+        .and_then(|c| c.code.as_deref())
+        .expect("Code existence checked");
     // Check for equivalence first
     if code_a == code_b {
         return Ok(Json(Parameters::with_parameters(vec![Parameter::code(
@@ -153,7 +150,7 @@ async fn perform_subsumes(
 
     // Query closure table for subsumption relationship
     let outcome = store
-        .check_subsumption(&code_system.id, code_a, code_b)
+        .check_subsumption(&resolved.id, code_a, code_b)
         .await?;
 
     let outcome_code = match outcome {

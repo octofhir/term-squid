@@ -44,3 +44,6 @@ temp/
 
 # Downloaded terminology data
 data/
+
+# Local benchmark sources, generated fixtures and measurements
+.benchmarks/

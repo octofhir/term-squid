@@ -41,10 +41,13 @@ async fn main() -> Result<()> {
     // Create database connection pool
     tracing::info!("Connecting to database...");
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database_max_connections)
         .connect(&config.database_url)
         .await?;
-    tracing::info!("Database connection pool created");
+    tracing::info!(
+        max_connections = config.database_max_connections,
+        "Database connection pool created"
+    );
 
     // Test database connection
     sqlx::query("SELECT 1").execute(&pool).await?;
@@ -112,3 +115,6 @@ fn serve_index_html() -> Response {
             .unwrap(),
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,6 +7,9 @@ use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    #[error("Unsupported terminology expression: {0}")]
+    Terminology(#[from] term_squid_core::Error),
+
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -32,12 +35,16 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "Resource not found"),
+            AppError::Terminology(_) => (StatusCode::UNPROCESSABLE_ENTITY, "not-supported"),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, "Bad request"),
         };
 
         let body = Json(json!({
-            "error": error_message,
-            "message": self.to_string(),
+            "resourceType": "OperationOutcome",
+            "issue": [{"severity": "error", "code": match status {
+                StatusCode::NOT_FOUND => "not-found", StatusCode::BAD_REQUEST => "invalid",
+                StatusCode::UNPROCESSABLE_ENTITY => "not-supported", _ => "exception"
+            }, "diagnostics": if status.is_server_error() { error_message.to_string() } else { self.to_string() }}],
         }));
 
         (status, body).into_response()

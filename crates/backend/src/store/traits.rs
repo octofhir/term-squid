@@ -1,12 +1,15 @@
 use crate::error::AppError;
-use crate::models::{CodeSystem, Concept, ConceptMap, SearchParams, ValueSet};
+use crate::models::{
+    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, SearchParams, ValueSet,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 
 /// Trait for terminology storage backend
 /// This allows for pluggable storage implementations (PostgreSQL, SQLite, in-memory, etc.)
 #[async_trait]
-#[allow(dead_code)]
+// async-trait adds must_use to an already must-use boxed Future on newer Clippy.
+#[allow(dead_code, clippy::double_must_use)]
 pub trait TerminologyStore: Send + Sync {
     // CodeSystem operations
     async fn create_code_system(&self, cs: CodeSystem) -> Result<CodeSystem, AppError>;
@@ -50,6 +53,34 @@ pub trait TerminologyStore: Send + Sync {
     async fn count_code_systems(&self) -> Result<i64, AppError>;
     async fn count_value_sets(&self) -> Result<i64, AppError>;
     async fn count_concept_maps(&self) -> Result<i64, AppError>;
+
+    async fn resolve_concept(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code: &str,
+    ) -> Result<Option<ResolvedConcept>, AppError>;
+    async fn resolve_concept_by_id(
+        &self,
+        id: &uuid::Uuid,
+        code: &str,
+    ) -> Result<Option<ResolvedConcept>, AppError>;
+    async fn expand_compose(
+        &self,
+        url: &str,
+        version: Option<&str>,
+    ) -> Result<ExpandedValueSet, AppError>;
+
+    async fn expand_compose_by_id(&self, id: &uuid::Uuid) -> Result<ExpandedValueSet, AppError>;
+
+    async fn compose_for_validation(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<uuid::Uuid>,
+        system: &str,
+        system_version: Option<&str>,
+    ) -> Result<ExpandedValueSet, AppError>;
 
     // Concept operations (for $lookup and $validate-code)
     async fn get_concept(

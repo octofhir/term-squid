@@ -1,5 +1,6 @@
 mod commands;
 mod package;
+mod terminology;
 
 use clap::{Parser, Subcommand};
 use tracing::Level;

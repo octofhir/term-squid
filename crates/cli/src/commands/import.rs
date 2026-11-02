@@ -208,43 +208,8 @@ async fn import_code_system(
     .execute(&mut **tx)
     .await?;
 
-    // Import concepts if present
-    if let Some(concepts) = resource.content.get("concept").and_then(|c| c.as_array()) {
-        import_concepts(tx, &id, concepts).await?;
-    }
-
+    crate::terminology::import_concepts(tx, id, &resource.content).await?;
     Ok(true)
-}
-
-async fn import_concepts(
-    tx: &mut Transaction<'_, Postgres>,
-    code_system_id: &Uuid,
-    concepts: &[serde_json::Value],
-) -> Result<()> {
-    for concept in concepts {
-        let code = concept
-            .get("code")
-            .and_then(|c| c.as_str())
-            .context("Concept must have a code")?;
-        let display = concept.get("display").and_then(|d| d.as_str());
-        let definition = concept.get("definition").and_then(|d| d.as_str());
-        let properties = concept.get("property");
-
-        sqlx::query(
-            "INSERT INTO concepts (code_system_id, code, display, definition, properties)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (code_system_id, code) DO NOTHING",
-        )
-        .bind(code_system_id)
-        .bind(code)
-        .bind(display)
-        .bind(definition)
-        .bind(properties.map(sqlx::types::Json))
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    Ok(())
 }
 
 async fn import_value_set(

@@ -17,6 +17,10 @@ pub struct ValidateCodeParams {
     pub code: Option<String>,
     pub version: Option<String>,
     pub display: Option<String>,
+    #[serde(rename = "valueSetVersion")]
+    pub value_set_version: Option<String>,
+    #[serde(rename = "systemVersion")]
+    pub system_version: Option<String>,
 }
 
 /// GET /CodeSystem/$validate-code?url=...&code=...
@@ -72,19 +76,11 @@ pub async fn validate_code_cs_instance_get(
         .code
         .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
 
-    let code_system = store
-        .get_code_system_by_id(&id)
+    let resolved = store
+        .resolve_concept_by_id(&id, &code)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_validate_code(
-        store,
-        &code_system.url,
-        &code,
-        None,
-        params.display.as_deref(),
-    )
-    .await
+    validate_result(resolved, &code, params.display.as_deref())
 }
 
 /// POST /CodeSystem/{id}/$validate-code with Parameters body
@@ -99,12 +95,11 @@ pub async fn validate_code_cs_instance_post(
         .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
     let display = params.get_string("display");
 
-    let code_system = store
-        .get_code_system_by_id(&id)
+    let resolved = store
+        .resolve_concept_by_id(&id, code)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_validate_code(store, &code_system.url, code, None, display).await
+    validate_result(resolved, code, display)
 }
 
 /// GET /ValueSet/$validate-code?url=...&code=...&system=...
@@ -125,6 +120,8 @@ pub async fn validate_code_vs_get(
     perform_validate_code_valueset(
         store,
         &value_set_url,
+        params.value_set_version.as_deref(),
+        params.system_version.as_deref(),
         &system,
         &code,
         params.display.as_deref(),
@@ -150,7 +147,16 @@ pub async fn validate_code_vs_post(
     })?;
     let display = params.get_string("display");
 
-    perform_validate_code_valueset(store, value_set_url, system, code, display).await
+    perform_validate_code_valueset(
+        store,
+        value_set_url,
+        params.get_string("valueSetVersion"),
+        params.get_string("systemVersion"),
+        system,
+        code,
+        display,
+    )
+    .await
 }
 
 /// GET /ValueSet/{id}/$validate-code?code=...&system=...
@@ -166,19 +172,22 @@ pub async fn validate_code_vs_instance_get(
         AppError::BadRequest("system parameter required for ValueSet validation".to_string())
     })?;
 
-    let value_set = store
-        .get_value_set_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ValueSet {id} not found")))?;
-
-    perform_validate_code_valueset(
-        store,
-        &value_set.url,
+    let expanded = store
+        .compose_for_validation(
+            "urn:term-squid:instance",
+            None,
+            Some(id),
+            &system,
+            params.system_version.as_deref(),
+        )
+        .await?;
+    validate_members(
+        expanded.members,
+        params.system_version.as_deref(),
         &system,
         &code,
         params.display.as_deref(),
     )
-    .await
 }
 
 /// POST /ValueSet/{id}/$validate-code with Parameters body
@@ -196,12 +205,22 @@ pub async fn validate_code_vs_instance_post(
     })?;
     let display = params.get_string("display");
 
-    let value_set = store
-        .get_value_set_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ValueSet {id} not found")))?;
-
-    perform_validate_code_valueset(store, &value_set.url, system, code, display).await
+    let expanded = store
+        .compose_for_validation(
+            "urn:term-squid:instance",
+            None,
+            Some(id),
+            system,
+            params.get_string("systemVersion"),
+        )
+        .await?;
+    validate_members(
+        expanded.members,
+        params.get_string("systemVersion"),
+        system,
+        code,
+        display,
+    )
 }
 
 async fn perform_validate_code(
@@ -211,79 +230,104 @@ async fn perform_validate_code(
     version: Option<&str>,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    // Check if CodeSystem exists
-    let code_system = store.get_code_system(system, version).await?;
-    if code_system.is_none() {
-        return Ok(Json(Parameters::with_parameters(vec![
-            Parameter::boolean("result", false),
-            Parameter::string("message", format!("CodeSystem '{system}' not found")),
-        ])));
-    }
+    let resolved = store
+        .resolve_concept(system, version, code)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "CodeSystem '{system}' version {version:?} not found"
+            ))
+        })?;
+    validate_result(resolved, code, display)
+}
 
-    let code_system = code_system.unwrap();
-
-    // Check if code exists in the system
-    let concept = store.get_concept(&code_system.id, code).await?;
-
-    let is_valid = concept.is_some();
-    let mut result_params = vec![Parameter::boolean("result", is_valid)];
-
-    if is_valid {
-        let concept = concept.unwrap();
-
-        // Optionally validate display
-        if let Some(expected_display) = display {
-            if let Some(actual_display) = &concept.display {
-                if actual_display != expected_display {
-                    result_params.push(Parameter::string(
-                        "message",
-                        format!(
-                            "Display value '{expected_display}' does not match expected '{actual_display}'"
-                        ),
-                    ));
-                }
-            }
-        }
-
-        result_params.push(Parameter::string(
-            "display",
-            concept.display.unwrap_or_default(),
+fn validate_result(
+    resolved: crate::models::ResolvedConcept,
+    code: &str,
+    display: Option<&str>,
+) -> Result<Json<Parameters>, AppError> {
+    if resolved.code.is_none() && resolved.content_mode.as_deref() != Some("complete") {
+        return Err(AppError::BadRequest(
+            "CodeSystem content is incomplete; membership is unknown".into(),
         ));
+    }
+    let mut valid = resolved.code.is_some();
+    let mut message = if valid {
+        None
     } else {
-        result_params.push(Parameter::string(
-            "message",
-            format!("Code '{code}' not found in system '{system}'"),
-        ));
+        Some(format!("Code '{code}' not found"))
+    };
+    if let Some(expected) = display {
+        if resolved.display.as_deref() != Some(expected) && valid {
+            valid = false;
+            message = Some(format!(
+                "Display '{expected}' does not match {:?}",
+                resolved.display
+            ));
+        }
     }
-
-    Ok(Json(Parameters::with_parameters(result_params)))
+    let mut result = vec![Parameter::boolean("result", valid)];
+    if let Some(display) = resolved.display {
+        result.push(Parameter::string("display", display));
+    }
+    if let Some(version) = resolved.version {
+        result.push(Parameter::string("version", version));
+    }
+    if let Some(message) = message {
+        result.push(Parameter::string("message", message));
+    }
+    Ok(Json(Parameters::with_parameters(result)))
 }
 
 async fn perform_validate_code_valueset(
     store: Arc<dyn TerminologyStore>,
-    _value_set_url: &str,
+    value_set_url: &str,
+    value_set_version: Option<&str>,
+    system_version: Option<&str>,
     system: &str,
     code: &str,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    // First validate the code exists in the specified system
-    let code_validation = perform_validate_code(store.clone(), system, code, None, display).await?;
+    let expanded = store
+        .compose_for_validation(
+            value_set_url,
+            value_set_version,
+            None,
+            system,
+            system_version,
+        )
+        .await?;
+    validate_members(expanded.members, system_version, system, code, display)
+}
 
-    let code_valid = code_validation.0.get_boolean("result").unwrap_or(false);
-
-    if !code_valid {
-        return Ok(code_validation);
+fn validate_members(
+    members: term_squid_core::Members,
+    system_version: Option<&str>,
+    system: &str,
+    code: &str,
+    display: Option<&str>,
+) -> Result<Json<Parameters>, AppError> {
+    let member = members.values().find(|m| {
+        m.system == system
+            && (m.code == code
+                || (!m.case_sensitive && m.code.to_lowercase() == code.to_lowercase()))
+            && system_version.is_none_or(|v| m.version.as_deref() == Some(v))
+    });
+    let valid = member.is_some_and(|m| display.is_none_or(|d| m.display.as_deref() == Some(d)));
+    let mut result = vec![Parameter::boolean("result", valid)];
+    if let Some(m) = member {
+        if let Some(display) = &m.display {
+            result.push(Parameter::string("display", display));
+        }
+        if let Some(version) = &m.version {
+            result.push(Parameter::string("version", version));
+        }
     }
-
-    // TODO: Check if the ValueSet includes this code from this system
-    // For now, we'll just validate the code exists in the system
-    // Full implementation requires expanding the ValueSet and checking membership
-
-    Ok(Json(Parameters::with_parameters(vec![
-        Parameter::boolean("result", true),
-        Parameter::string(
+    if !valid {
+        result.push(Parameter::string(
             "message",
-            "Code validation passed (ValueSet expansion not yet implemented)",
-        ),
-    ])))
+            "Code, version or display is not in the ValueSet",
+        ));
+    }
+    Ok(Json(Parameters::with_parameters(result)))
 }

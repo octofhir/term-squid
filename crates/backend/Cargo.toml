@@ -10,6 +10,7 @@ name = "backend"
 path = "src/main.rs"
 
 [dependencies]
+term-squid-core = { path = "../core" }
 # Web Framework
 axum.workspace = true
 tokio.workspace = true

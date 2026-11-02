@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::{SearchParams, ValueSet};
+use crate::models::SearchParams;
 use crate::store::TerminologyStore;
 
 pub fn valueset_routes() -> Router<Arc<dyn TerminologyStore>> {
@@ -47,7 +47,7 @@ impl From<SearchQuery> for SearchParams {
 async fn get_valueset(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<String>,
-) -> Result<Json<ValueSet>, AppError> {
+) -> Result<Json<Value>, AppError> {
     let value_set = if let Ok(uuid) = Uuid::parse_str(&id) {
         store.get_value_set_by_id(&uuid).await?
     } else {
@@ -56,7 +56,7 @@ async fn get_valueset(
 
     value_set
         .ok_or_else(|| AppError::NotFound("ValueSet not found".to_string()))
-        .map(Json)
+        .map(|resource| Json(resource.content.0))
 }
 
 async fn search_valuesets(

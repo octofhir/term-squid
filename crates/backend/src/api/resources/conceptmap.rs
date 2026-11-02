@@ -9,7 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::{ConceptMap, SearchParams};
+use crate::models::SearchParams;
 use crate::store::TerminologyStore;
 
 pub fn conceptmap_routes() -> Router<Arc<dyn TerminologyStore>> {
@@ -46,7 +46,7 @@ impl From<SearchQuery> for SearchParams {
 async fn get_conceptmap(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<String>,
-) -> Result<Json<ConceptMap>, AppError> {
+) -> Result<Json<Value>, AppError> {
     let concept_map = if let Ok(uuid) = Uuid::parse_str(&id) {
         store.get_concept_map_by_id(&uuid).await?
     } else {
@@ -55,7 +55,7 @@ async fn get_conceptmap(
 
     concept_map
         .ok_or_else(|| AppError::NotFound("ConceptMap not found".to_string()))
-        .map(Json)
+        .map(|resource| Json(resource.content.0))
 }
 
 async fn search_conceptmaps(

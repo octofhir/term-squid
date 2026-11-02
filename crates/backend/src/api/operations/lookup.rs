@@ -60,13 +60,11 @@ pub async fn lookup_instance_get(
         .code
         .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
 
-    // Get CodeSystem by ID to extract system URL
-    let code_system = store
-        .get_code_system_by_id(&id)
+    let concept = store
+        .resolve_concept_by_id(&id, &code)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_lookup(store, &code_system.url, &code, None).await
+    lookup_result(concept, &code)
 }
 
 /// POST /CodeSystem/{id}/$lookup with Parameters body
@@ -80,13 +78,11 @@ pub async fn lookup_instance_post(
         .or_else(|| params.get_code("code"))
         .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
 
-    // Get CodeSystem by ID to extract system URL
-    let code_system = store
-        .get_code_system_by_id(&id)
+    let concept = store
+        .resolve_concept_by_id(&id, code)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-
-    perform_lookup(store, &code_system.url, code, None).await
+    lookup_result(concept, code)
 }
 
 async fn perform_lookup(
@@ -95,26 +91,37 @@ async fn perform_lookup(
     code: &str,
     version: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    // Get the CodeSystem
-    let code_system = store
-        .get_code_system(system, version)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("CodeSystem '{system}' not found")))?;
-
-    // Find the concept in the database
     let concept = store
-        .get_concept(&code_system.id, code)
+        .resolve_concept(system, version, code)
         .await?
         .ok_or_else(|| {
-            AppError::NotFound(format!("Code '{code}' not found in system '{system}'"))
+            AppError::NotFound(format!(
+                "CodeSystem '{system}' version {version:?} not found"
+            ))
         })?;
+    lookup_result(concept, code)
+}
 
+fn lookup_result(
+    concept: crate::models::ResolvedConcept,
+    code: &str,
+) -> Result<Json<Parameters>, AppError> {
+    if concept.code.is_none() {
+        return Err(if concept.content_mode.as_deref() == Some("complete") {
+            AppError::NotFound(format!("Code '{code}' not found"))
+        } else {
+            AppError::BadRequest("CodeSystem content is incomplete; code cannot be resolved".into())
+        });
+    }
     // Build result Parameters
     let mut result_params = vec![
-        Parameter::string("name", code_system.name.as_deref().unwrap_or("")),
+        Parameter::string("name", concept.name.as_deref().unwrap_or("")),
         Parameter::string("display", concept.display.as_deref().unwrap_or("")),
     ];
 
+    if let Some(version) = &concept.version {
+        result_params.push(Parameter::string("version", version));
+    }
     // Add designation if we have a definition
     if let Some(definition) = &concept.definition {
         result_params.push(Parameter::part(

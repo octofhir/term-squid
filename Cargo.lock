@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "term-squid-backend"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2575,6 +2575,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "term-squid-core",
  "thiserror 1.0.69",
  "tokio",
  "tower",
@@ -2586,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "term-squid-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2599,10 +2600,20 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tar",
+ "term-squid-core",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "term-squid-core"
+version = "0.1.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

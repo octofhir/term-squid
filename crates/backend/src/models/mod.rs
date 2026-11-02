@@ -68,3 +68,23 @@ pub struct SearchParams {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
+
+/// One bounded row for lookup/validation; deliberately excludes the resource JSON.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ResolvedConcept {
+    pub id: Uuid,
+    pub hierarchy_meaning: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub content_mode: Option<String>,
+    pub code: Option<String>,
+    pub display: Option<String>,
+    pub definition: Option<String>,
+    pub properties: Option<Json<serde_json::Value>>,
+}
+
+/// Resource and members resolved from the same database snapshot.
+pub struct ExpandedValueSet {
+    pub resource: serde_json::Value,
+    pub members: term_squid_core::Members,
+}

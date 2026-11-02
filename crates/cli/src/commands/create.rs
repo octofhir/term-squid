@@ -63,6 +63,7 @@ pub async fn create_code_system(pool: PgPool, file_path: String) -> Result<()> {
 
     // Insert CodeSystem
     let id = Uuid::new_v4();
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO code_systems (id, url, version, status, name, title, fhir_version, content, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())",
@@ -75,37 +76,11 @@ pub async fn create_code_system(pool: PgPool, file_path: String) -> Result<()> {
     .bind(&title)
     .bind(&fhir_version)
     .bind(sqlx::types::Json(&json))
-    .execute(&pool)
+    .execute(&mut *tx)
     .await?;
 
-    // Import concepts if present
-    if let Some(concepts) = json.get("concept").and_then(|c| c.as_array()) {
-        let concept_count = concepts.len();
-        info!("Importing {} concepts...", concept_count);
-
-        for concept in concepts {
-            let code = concept
-                .get("code")
-                .and_then(|c| c.as_str())
-                .context("Concept must have a code")?;
-            let display = concept.get("display").and_then(|d| d.as_str());
-            let definition = concept.get("definition").and_then(|d| d.as_str());
-            let properties = concept.get("property");
-
-            sqlx::query(
-                "INSERT INTO concepts (code_system_id, code, display, definition, properties)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (code_system_id, code) DO NOTHING",
-            )
-            .bind(id)
-            .bind(code)
-            .bind(display)
-            .bind(definition)
-            .bind(properties.map(sqlx::types::Json))
-            .execute(&pool)
-            .await?;
-        }
-    }
+    crate::terminology::import_concepts(&mut tx, id, &json).await?;
+    tx.commit().await?;
 
     println!("✅ CodeSystem created successfully!");
     println!("  ID: {id}");

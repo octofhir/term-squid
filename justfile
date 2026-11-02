@@ -1,6 +1,8 @@
 # term-squid - FHIR Terminology Server
 # Just commands for common development tasks
 
+bench_database_url := env('BENCH_DATABASE_URL', 'postgresql://benchmark:benchmark@127.0.0.1:15433/term_squid_benchmark')
+
 # List all available commands
 default:
     @just --list
@@ -248,6 +250,56 @@ logs-db:
 open:
     open http://localhost:8081
 
-# Benchmark the API (requires Apache Bench)
-bench:
+# Benchmark the terminology API against generated local fixtures (requires Bun and k6)
+[positional-arguments]
+bench *args:
+    bun benchmarks/bench.ts run "$@"
+
+# Check terminology responses without applying load
+[positional-arguments]
+bench-preflight *args:
+    bun benchmarks/bench.ts run --preflight-only "$@"
+
+# Download the pinned HealthSamurai TX Benchmark
+bench-fetch:
+    bun benchmarks/bench.ts fetch
+
+# Run the original TX Benchmark scenarios without the observability stack
+[positional-arguments]
+bench-upstream *args:
+    bun benchmarks/bench.ts run --suite upstream "$@"
+
+# Generate a repeatable synthetic FHIR package
+bench-fixtures:
+    bun benchmarks/bench.ts fixtures
+
+# Import the synthetic package into the benchmark database through the existing CLI
+bench-seed:
+    DATABASE_URL="{{bench_database_url}}" CARGO_TARGET_DIR=.benchmarks/target bun benchmarks/bench.ts seed
+
+# Start an isolated benchmark database
+bench-db:
+    docker compose -f benchmarks/compose.yaml up -d --wait
+
+# Apply the actual application migrations to the benchmark database
+bench-migrate:
+    sqlx migrate run --source crates/backend/migrations --database-url "{{bench_database_url}}"
+
+# Prepare the isolated database and synthetic data
+bench-setup: bench-db bench-migrate bench-seed
+
+# Run the release server in the foreground on the benchmark port
+bench-server:
+    DATABASE_URL="{{bench_database_url}}" SERVER_HOST=127.0.0.1 SERVER_PORT=18081 RUST_LOG=warn CARGO_TARGET_DIR=.benchmarks/target cargo run --release --bin backend
+
+# Stop benchmark containers while preserving their data
+bench-stop:
+    docker compose -f benchmarks/compose.yaml down
+
+# Check benchmark orchestration and semantic assertions
+bench-test:
+    bun test benchmarks
+
+# Benchmark the health endpoint (transport smoke test only; requires Apache Bench)
+bench-health:
     ab -n 1000 -c 10 http://localhost:8081/health

@@ -12,26 +12,22 @@ pub async fn capability_statement() -> Json<Value> {
             "version": env!("CARGO_PKG_VERSION")
         },
         "implementation": {
-            "description": "FHIR Terminology Service - PostgreSQL backed. Multi-version support: /r4, /r5, /r6"
+            "description": "FHIR R4 terminology service backed by PostgreSQL; R5/R6 routes are experimental aliases"
         },
         "fhirVersion": "4.0.1",
         "format": ["json"],
         "rest": [{
             "mode": "server",
-            "documentation": "All endpoints are available under version-specific base URLs: /r4, /r5, and /r6",
+            "documentation": "Supported FHIR release: R4 4.0.1 at /r4. Legacy /r5 and /r6 aliases have no verified release adapter.",
             "resource": [
                 {
                     "type": "CodeSystem",
                     "interaction": [
                         {"code": "read"},
-                        {"code": "create"},
-                        {"code": "update"},
-                        {"code": "delete"},
                         {"code": "search-type"}
                     ],
                     "searchParam": [
                         {"name": "url", "type": "uri"},
-                        {"name": "version", "type": "string"},
                         {"name": "name", "type": "string"},
                         {"name": "status", "type": "token"}
                     ]
@@ -40,14 +36,10 @@ pub async fn capability_statement() -> Json<Value> {
                     "type": "ValueSet",
                     "interaction": [
                         {"code": "read"},
-                        {"code": "create"},
-                        {"code": "update"},
-                        {"code": "delete"},
                         {"code": "search-type"}
                     ],
                     "searchParam": [
                         {"name": "url", "type": "uri"},
-                        {"name": "version", "type": "string"},
                         {"name": "name", "type": "string"},
                         {"name": "status", "type": "token"}
                     ]
@@ -56,14 +48,10 @@ pub async fn capability_statement() -> Json<Value> {
                     "type": "ConceptMap",
                     "interaction": [
                         {"code": "read"},
-                        {"code": "create"},
-                        {"code": "update"},
-                        {"code": "delete"},
                         {"code": "search-type"}
                     ],
                     "searchParam": [
                         {"name": "url", "type": "uri"},
-                        {"name": "version", "type": "string"},
                         {"name": "status", "type": "token"}
                     ]
                 }

@@ -1,6 +1,6 @@
 <p align="center"><img src=".github/banner.png" alt="octo/term-squid — A FHIR terminology server on Rust and PostgreSQL" width="100%"></p>
 
-<p align="center"><b>A read-only FHIR terminology server for R4, R5 and R6, on Rust (Axum), PostgreSQL and a SolidJS UI.</b></p>
+<p align="center"><b>A standalone FHIR terminology server under development, on Rust (Axum), PostgreSQL and a SolidJS UI.</b></p>
 
 <p align="center">
   <a href="https://github.com/octofhir/term-squid/actions/workflows/ci.yml"><img src="https://github.com/octofhir/term-squid/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,17 +9,19 @@
 
 ## Status
 
-✅ **Core Features Complete** - Backend API, CLI, and Frontend UI implemented
+Prototype: backend API, CLI and UI are present, but terminology semantics are incomplete. R4 is the first conformance target; R5/R6 routes currently share the implementation and do not establish support for those releases.
+
+See the [product development plan](docs/PRODUCT_PLAN.md) and [local benchmark instructions](benchmarks/README.md). Known correctness gaps are tracked there and exposed by semantic benchmark preflight.
 
 ## Features
 
-- ✅ **Multi-version FHIR Support** - R4, R5, and R6 endpoints
-- ✅ **Read-only REST API** - Secure terminology server with GET-only operations
+- **FHIR routes** - R4, R5 and R6 route groups; release-specific conformance is pending
+- **Read-only content API** - Resource search/read and GET/POST terminology operations; content management through CLI
 - ✅ **CLI Resource Creation** - Create CodeSystem, ValueSet, ConceptMap via command-line
-- ✅ **FHIR Operations** - $lookup, $validate-code, $subsumes, $expand, $translate
+- **FHIR Operations** - $lookup, $validate-code, $subsumes, $expand, $translate handlers; semantic coverage is under development
 - ✅ **PostgreSQL Storage** - Efficient storage with JSONB and full-text search
 - ✅ **Package Loader CLI** - Import official FHIR packages from packages.fhir.org
-- ✅ **Clinical Terminologies** - Easy ICD-10 and LOINC import
+- **Clinical Terminology Import** - Import tooling exists; complete LOINC/UCUM provider behavior is planned
 - ✅ **Modern Web UI** - SolidJS frontend with Linear-inspired design
 - ✅ **Embedded Deployment** - Single binary with embedded frontend assets
 - ✅ **Async-first Architecture** - High-performance async Rust with Tokio
@@ -177,34 +179,30 @@ term-squid/
             └── global.css        # Linear-inspired design system
 ```
 
-## Implementation Progress
+## Benchmarks
 
-- ✅ Task 01: Project Setup
-- ✅ Task 02: Storage Layer - PostgreSQL with JSONB and full-text search
-- ✅ Task 03: FHIR REST API - Multi-version (R4/R5/R6) endpoints
-- ✅ Task 04: FHIR Operations - $lookup, $validate-code, $subsumes, $expand, $translate
-- ✅ Task 05: Package Loader CLI - Import from packages.fhir.org
-- ✅ Task 06: Frontend Setup - SolidJS with embedded deployment
-- ✅ Task 07: Frontend UI Components - Complete resource browsers with search
-- 🚧 Task 08: Testing & Documentation (in progress)
+Use the isolated local database and release server:
+
+```sh
+just bench-setup
+just bench-server     # foreground; run benchmarks in another terminal
+just bench-preflight
+just bench --tests TS-CS01 --vus 1,10 --duration 5s
+```
+
+Requires Bun, k6, Docker Compose and sqlx-cli alongside Rust. The [benchmark guide](benchmarks/README.md) covers setup, the pinned upstream TX Benchmark, results and correctness gates. The [product plan](docs/PRODUCT_PLAN.md) defines milestones and acceptance criteria.
 
 ## API Documentation
 
 ### Base URLs
 
-- R4: `http://localhost:8081/api/r4`
-- R5: `http://localhost:8081/api/r5`
-- R6: `http://localhost:8081/api/r6`
+- R4: `http://localhost:8081/r4`
+- R5: `http://localhost:8081/r5` (conformance pending)
+- R6: `http://localhost:8081/r6` (conformance pending)
 
 ### Security Model
 
-**The REST API is read-only by design** - This ensures terminology integrity and prevents unauthorized modifications:
-
-- ✅ **GET operations** - Search and read resources
-- ❌ **POST/PUT/DELETE** - Not available via REST API
-- ✅ **CLI operations** - Create resources via command-line tool with database access
-
-This follows FHIR terminology server best practices where content is managed through controlled processes (CLI, package imports) rather than open REST APIs.
+Content is managed through CLI and package imports. Resource search/read uses GET. Terminology operations also accept POST Parameters requests; POST does not imply resource creation. Resource CRUD is not exposed.
 
 ### REST Endpoints
 
@@ -212,30 +210,30 @@ This follows FHIR terminology server best practices where content is managed thr
 
 ```bash
 # Search CodeSystems
-GET /api/r4/CodeSystem?name=international&status=active
+GET /r4/CodeSystem?name=international&status=active
 
 # Get specific CodeSystem
-GET /api/r4/CodeSystem/{id}
+GET /r4/CodeSystem/{id}
 ```
 
 #### ValueSet
 
 ```bash
 # Search ValueSets
-GET /api/r4/ValueSet?name=administrative
+GET /r4/ValueSet?name=administrative
 
 # Get specific ValueSet
-GET /api/r4/ValueSet/{id}
+GET /r4/ValueSet/{id}
 ```
 
 #### ConceptMap
 
 ```bash
 # Search ConceptMaps
-GET /api/r4/ConceptMap?name=map
+GET /r4/ConceptMap?name=map
 
 # Get specific ConceptMap
-GET /api/r4/ConceptMap/{id}
+GET /r4/ConceptMap/{id}
 ```
 
 ### FHIR Operations
@@ -243,7 +241,7 @@ GET /api/r4/ConceptMap/{id}
 #### $lookup - Find concept details
 
 ```bash
-GET /api/r4/CodeSystem/$lookup?system=http://loinc.org&code=1234-5
+GET /r4/CodeSystem/$lookup?system=http://loinc.org&code=1234-5
 ```
 
 Returns concept display, designation, and properties.
@@ -251,7 +249,7 @@ Returns concept display, designation, and properties.
 #### $validate-code - Validate code in ValueSet
 
 ```bash
-GET /api/r4/ValueSet/$validate-code?url=http://hl7.org/fhir/ValueSet/example&code=test
+GET /r4/ValueSet/$validate-code?url=http://hl7.org/fhir/ValueSet/example&code=test
 ```
 
 Returns validation result with issues if invalid.
@@ -259,7 +257,7 @@ Returns validation result with issues if invalid.
 #### $subsumes - Test subsumption relationship
 
 ```bash
-GET /api/r4/CodeSystem/$subsumes?system=http://snomed.info/sct&codeA=123&codeB=456
+GET /r4/CodeSystem/$subsumes?system=http://snomed.info/sct&codeA=123&codeB=456
 ```
 
 Returns: `equivalent`, `subsumes`, `subsumed-by`, or `not-subsumed`.
@@ -267,7 +265,7 @@ Returns: `equivalent`, `subsumes`, `subsumed-by`, or `not-subsumed`.
 #### $expand - Expand ValueSet
 
 ```bash
-GET /api/r4/ValueSet/$expand?url=http://hl7.org/fhir/ValueSet/example
+GET /r4/ValueSet/$expand?url=http://hl7.org/fhir/ValueSet/example
 ```
 
 Returns expanded ValueSet with all codes included.
@@ -275,7 +273,7 @@ Returns expanded ValueSet with all codes included.
 #### $translate - Translate between code systems
 
 ```bash
-GET /api/r4/ConceptMap/$translate?url=http://example.org/map&code=abc&system=http://example.org/source
+GET /r4/ConceptMap/$translate?url=http://example.org/map&code=abc&system=http://example.org/source
 ```
 
 Returns translated codes with equivalence relationships.
@@ -355,6 +353,7 @@ just docker-run
 ### Environment Variables
 
 - `DATABASE_URL` - PostgreSQL connection string (default: `postgresql://termserver:dev_password@localhost:5433/termserver`)
+- `DATABASE_MAX_CONNECTIONS` - SQLx pool capacity, 1–64 (default: `5`); benchmark capacity changes separately from semantic changes
 - `SERVER_HOST` - Server host (default: `127.0.0.1`)
 - `SERVER_PORT` - Server port (default: `8081`)
 - `RUST_LOG` - Log level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`)
