@@ -59,7 +59,18 @@ export const CASES = [
     probes: [probe(vsValidate(7), (b) => bool(b) === true, 'included code is valid'),
       probe(vsValidate(42), (b) => bool(b) === false, 'excluded code is invalid'),
       probe(vsValidate(999), (b) => bool(b) === false, 'code outside the ValueSet is invalid')],
-    sample(i) { const n = [7, 42, 999][i % 3]; return probe(vsValidate(n), (b) => bool(b) === (n === 7), 'ValueSet membership'); },
+    sample(i) {
+      // Stable mix at every rate: 40% included, 20% excluded, 20% outside, 20% missing.
+      let n;
+      switch (i % 5) {
+        case 0: n = 10000 + i % 10000; break;
+        case 2: n = 42; break;
+        case 3: n = 256 + i % (CONCEPT_COUNT - 256); break;
+        default: n = (i * 17) % 256; if (n === 42) n = 43;
+      }
+      return probe(vsValidate(n), (b) => bool(b) === (n < 256 && n !== 42),
+        'ValueSet membership with changing, excluded, outside and missing codes');
+    },
   },
   {
     id: 'TS-EX01', name: 'ValueSet expansion with exclusion and pagination',

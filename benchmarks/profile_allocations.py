@@ -76,6 +76,9 @@ def main():
         for name in ['Cargo.toml', 'Cargo.lock']:
             shutil.copy2(ROOT / name, source / name)
         shutil.copytree(ROOT / 'crates', source / 'crates')
+    # Shared diagnostic target directories must not reuse a newer artifact from another source copy.
+    for rust_source in (source / "crates").rglob("*.rs"):
+        rust_source.touch()
     normalize_workspace_versions(source)
     path = source / 'crates/backend/src/main.rs'
     text = path.read_text()

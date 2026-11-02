@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod database;
 mod error;
 mod models;
 mod store;
@@ -12,7 +13,6 @@ use axum::{
 };
 use config::Config;
 use rust_embed::Embed;
-use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use store::{PostgresStore, TerminologyStore};
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
@@ -40,8 +40,7 @@ async fn main() -> Result<()> {
 
     // Create database connection pool
     tracing::info!("Connecting to database...");
-    let pool = PgPoolOptions::new()
-        .max_connections(config.database_max_connections)
+    let pool = database::pool_options(config.database_max_connections)
         .connect(&config.database_url)
         .await?;
     tracing::info!(

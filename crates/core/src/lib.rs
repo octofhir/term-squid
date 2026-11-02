@@ -345,7 +345,7 @@ pub struct Member {
 }
 pub type Members = BTreeMap<MemberKey, Member>;
 
-/// The SQL adapter constructs one snapshot in a repeatable-read transaction. No global cache.
+/// Immutable dependency snapshot constructed in one repeatable-read transaction.
 #[derive(Default)]
 pub struct Snapshot {
     pub systems: BTreeMap<Canonical, PreparedSystem>,
@@ -581,3 +581,60 @@ fn equality_matches(property: &Property, expected: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests;
+
+/// Immutable finite ValueSet plan. Evaluation and normalization happen once, never per code.
+/// The index preserves deterministic version ordering and case-insensitive system semantics.
+pub struct PreparedValueSet {
+    members: Members,
+    index: BTreeMap<(String, String), Vec<MemberKey>>,
+}
+impl PreparedValueSet {
+    pub fn prepare(snapshot: &Snapshot, canonical: &Canonical) -> Result<Self> {
+        let members = snapshot.expand(canonical)?;
+        let mut index: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for (key, member) in &members {
+            let code = if member.case_sensitive {
+                member.code.clone()
+            } else {
+                member.code.to_lowercase()
+            };
+            index
+                .entry((member.system.clone(), code))
+                .or_default()
+                .push(key.clone());
+        }
+        Ok(Self { members, index })
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Member> {
+        self.members.values()
+    }
+    pub fn find(&self, system: &str, version: Option<&str>, code: &str) -> Option<&Member> {
+        // A URL may have both case-sensitive and insensitive versions.
+        let exact = self.index.get(&(system.to_owned(), code.to_owned()));
+        let folded = self.index.get(&(system.to_owned(), code.to_lowercase()));
+        exact
+            .into_iter()
+            .chain(folded)
+            .flatten()
+            .filter_map(|k| self.members.get(k))
+            .filter(|m| {
+                (m.code == code
+                    || (!m.case_sensitive && m.code.to_lowercase() == code.to_lowercase()))
+                    && version.is_none_or(|v| m.version.as_deref() == Some(v))
+            })
+            .min_by(|a, b| a.version.cmp(&b.version).then(a.code.cmp(&b.code)))
+    }
+    /// Conservative charge for retained string buffers, tree nodes and duplicate index keys.
+    pub fn memory_charge(&self) -> usize {
+        self.members
+            .values()
+            .map(|m| {
+                2048 + 16
+                    * (m.system.len()
+                        + m.version.as_ref().map_or(0, String::len)
+                        + m.code.len()
+                        + m.display.as_ref().map_or(0, String::len))
+            })
+            .sum()
+    }
+}

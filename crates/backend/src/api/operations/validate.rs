@@ -301,18 +301,13 @@ async fn perform_validate_code_valueset(
 }
 
 fn validate_members(
-    members: term_squid_core::Members,
+    members: std::sync::Arc<term_squid_core::PreparedValueSet>,
     system_version: Option<&str>,
     system: &str,
     code: &str,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    let member = members.values().find(|m| {
-        m.system == system
-            && (m.code == code
-                || (!m.case_sensitive && m.code.to_lowercase() == code.to_lowercase()))
-            && system_version.is_none_or(|v| m.version.as_deref() == Some(v))
-    });
+    let member = members.find(system, system_version, code);
     let valid = member.is_some_and(|m| display.is_none_or(|d| m.display.as_deref() == Some(d)));
     let mut result = vec![Parameter::boolean("result", valid)];
     if let Some(m) = member {

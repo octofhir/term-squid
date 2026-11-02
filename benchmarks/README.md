@@ -150,5 +150,30 @@ DATABASE_MAX_CONNECTIONS=32 just bench-server
 ```
 
 A larger cap permits more database sessions; it does not replace prepared terminology data.
-Record the cap and CPU/RSS with each result. Compose preparation retains its independent
-two-worker limit. The default remains five to preserve the original baseline configuration.
+Record the cap and CPU/RSS with each result. Cold compose preparation has separate single-flight admission; warm checks use the
+configured database pool. The default remains five to preserve the original baseline configuration.
+
+## Prepared ValueSet increment
+
+Apply all migrations before starting the server; the prepared-plan adapter requires
+`terminology_generation` and its transactional CodeSystem/ValueSet triggers. Changes from
+separate CLI import processes invalidate plans on the next operation without a restart.
+The adapter retains at most eight plans and a 64 MiB conservative memory charge; oversized
+plans are evaluated without retention. See [the prepared-data report](../docs/PREPARED_DATA_REPORT.md)
+for the consistency contract and measured limitations.
+
+TS-VC01 samples changing codes across the synthetic system and 20% distinct missing codes.
+Both sides of a comparison must use the same runner revision. For the separate allocation
+probe, set `PROFILE_OPERATION=membership` to measure ValueSet membership instead of CodeSystem
+validation; keep the setting and driver identical before and after.
+
+The next [warm-read increment](../docs/WARM_READ_REPORT.md) removes serialized SQL checks
+from cache hits. TS-VC01 now uses a stable five-request mix: 40% included changing codes,
+20% excluded, 20% existing outside the set and 20% changing missing codes. Re-run both server
+builds with the same harness; do not substitute historical measurements with a different mix.
+
+The [transport increment](../docs/TRANSPORT_PERFORMANCE_REPORT.md) applies OctoFHIR pool/TCP
+patterns: hot connection checkouts skip an extra ping and idle sockets are checked after one
+second. TCP_NODELAY remains an experiment; SQLx's return-to-pool check remains.
+The idle threshold does not cache data generations. Performance reports compare the same
+harness with the previous binary and the pinned local FHIRsmith, keeping pool capacity fixed.

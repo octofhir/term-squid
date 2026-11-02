@@ -39,11 +39,13 @@ Local verification artifacts: `.benchmarks/results/audit-preflight/term-squid/`.
 
 The November 2 increment implements the seven local scenarios, extracts `term-squid-core`, and adds separate CPU/allocation profiling and sustained 1/10/50 VU measurements. A local pinned FHIRsmith R4 instance now runs the synthetic fixtures. See [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) for results, reference differences and limits; milestones 1 and 2 remain incomplete. The primary five-connection validation result is 4,448 req/s at 10 VU versus 196 req/s before (22.65×); a separate 32-connection experiment peaks at 7,156 req/s. The >12k and overall 3× reference goals are not achieved. Final compose rechecks remain near 52 req/s, making reusable preparation the next measured priority.
 
+The next increment adds bounded immutable finite plans with transactional cross-process invalidation. See [PREPARED_DATA_REPORT.md](PREPARED_DATA_REPORT.md) for evidence and remaining shared-snapshot/admission work. The subsequent [warm-read increment](WARM_READ_REPORT.md) makes generation checks concurrent while retaining post-commit freshness. The [transport increment](TRANSPORT_PERFORMANCE_REPORT.md) evaluates existing OctoFHIR pool and TCP patterns against the shared local FHIRsmith suite.
+
 Remaining work:
 
 1. Connect the ecosystem runner to CI for selected R4/general scenarios and define how its test resources are loaded.
 2. Complete the R4 parameter/semantic contract and maintain a requirements matrix beyond the synthetic preflights.
-3. Add generation-based prepared snapshots and bounded plan reuse, then repeat membership/expansion and mixed-load comparisons.
+3. Extend bounded finite-plan reuse with shared CodeSystem snapshots, finer admission and dependency-specific generations; add larger and mixed-load comparisons.
 4. Check correctness in CI; run absolute performance comparisons on a stable dedicated machine.
 
 Acceptance: a developer can reproduce the dataset, checks and results; known defects remain visible separately from speed measurements.

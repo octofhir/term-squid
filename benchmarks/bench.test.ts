@@ -14,6 +14,25 @@ describe('benchmark correctness gates', () => {
     expect(accepts(definition.probes[0], 200, {...yes, resourceType: undefined})).toBe(false);
     expect(accepts(definition.probes[0], 500, yes)).toBe(false);
   });
+  test('membership load keeps a stable mix and rejects incorrect positive and negative responses', () => {
+    const definition = CASES.find((c) => c.id === 'TS-VC01')!;
+    const counts = {included: 0, excluded: 0, outside: 0, missing: 0};
+    const seen = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      const p = definition.sample(i);
+      const c = new URL(p.request.path, 'http://localhost').searchParams.get('code')!;
+      seen.add(c);
+      const n = Number(c.slice(1));
+      const category = n >= 10000 ? 'missing' : n >= 256 ? 'outside' : n === 42 ? 'excluded' : 'included';
+      counts[category]++;
+      for (const valid of [true, false]) {
+        const body = {resourceType: 'Parameters', parameter: [{name: 'result', valueBoolean: valid}]};
+        expect(accepts(p, 200, body)).toBe(valid === (category === 'included'));
+      }
+    }
+    expect(counts).toEqual({included: 400, excluded: 200, outside: 200, missing: 200});
+    expect(seen.size).toBeGreaterThan(500);
+  });
   test('an expansion with duplicate or excluded codes cannot pass', () => {
     const p = CASES.find((c) => c.id === 'TS-EX01')!.probes[0];
     const contains = Array.from({length: 50}, (_, i) => ({system: SYSTEM, code: code(i < 42 ? i : i + 1)}));

@@ -101,31 +101,24 @@ async fn perform_expand(
             .await?
     };
     let filter = params.filter.as_ref().map(|s| s.to_lowercase());
-    let expansion_entries: Vec<_> = expanded
-        .members
-        .into_values()
-        .filter(|entry| {
-            filter.as_ref().is_none_or(|f| {
-                entry.code.to_lowercase().contains(f)
-                    || entry
-                        .display
-                        .as_ref()
-                        .is_some_and(|d| d.to_lowercase().contains(f))
-            })
-        })
-        .collect();
-
-    let total = expansion_entries.len();
-
-    // Apply pagination
     let offset = params.offset.unwrap_or(0) as usize;
     let count = params.count.unwrap_or(100) as usize;
-
-    let paginated_entries: Vec<_> = expansion_entries
-        .into_iter()
-        .skip(offset)
-        .take(count)
-        .collect();
+    let mut total = 0;
+    let mut paginated_entries = Vec::new();
+    for entry in expanded.members.values().filter(|entry| {
+        filter.as_ref().is_none_or(|f| {
+            entry.code.to_lowercase().contains(f)
+                || entry
+                    .display
+                    .as_ref()
+                    .is_some_and(|d| d.to_lowercase().contains(f))
+        })
+    }) {
+        if total >= offset && paginated_entries.len() < count {
+            paginated_entries.push(entry);
+        }
+        total += 1;
+    }
 
     // Build ValueSet with expansion
     let expansion = json!({
@@ -138,7 +131,7 @@ async fn perform_expand(
     });
 
     // Extract the base ValueSet content and add expansion
-    let mut result = expanded.resource;
+    let mut result = expanded.resource.as_ref().clone();
     if let Some(obj) = result.as_object_mut() {
         obj.insert("expansion".to_string(), expansion);
     }

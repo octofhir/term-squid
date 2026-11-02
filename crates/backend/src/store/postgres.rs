@@ -10,15 +10,67 @@ use uuid::Uuid;
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
-    compose_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    prepared: std::sync::Arc<tokio::sync::Mutex<PlanCache>>,
+    preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+// Cache locking never spans SQL or preparation. Generations only advance: an older
+// in-flight reader cannot evict or publish over a newer immutable snapshot.
+#[derive(Default)]
+struct PlanCache {
+    generation: i64,
+    entries: std::collections::BTreeMap<PlanKey, (ExpandedValueSet, usize)>,
+    bytes: usize,
+}
+type PlanKey = (
+    term_squid_core::Canonical,
+    Option<Uuid>,
+    Option<(String, String)>,
+);
+const PLAN_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+impl PlanCache {
+    fn publish(&mut self, generation: i64, key: PlanKey, result: ExpandedValueSet, charge: usize) {
+        self.advance(generation);
+        if generation != self.generation || charge > PLAN_CACHE_BYTES {
+            return;
+        }
+        if self.entries.len() >= 8 || self.bytes + charge > PLAN_CACHE_BYTES {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        if let Some((_, previous_charge)) = self.entries.insert(key, (result, charge)) {
+            self.bytes -= previous_charge;
+        }
+        self.bytes += charge;
+    }
+    fn advance(&mut self, generation: i64) {
+        if generation > self.generation {
+            self.entries.clear();
+            self.bytes = 0;
+            self.generation = generation;
+        }
+    }
 }
 
 impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
-            compose_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+            prepared: std::sync::Arc::new(tokio::sync::Mutex::new(PlanCache::default())),
+            preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+    #[cfg(test)]
+    pub(crate) async fn pause_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.preparation.clone().lock_owned().await
+    }
+    async fn cached_plan(&self, generation: i64, key: &PlanKey) -> Option<ExpandedValueSet> {
+        let mut cache = self.prepared.lock().await;
+        cache.advance(generation);
+        (cache.generation == generation)
+            .then(|| cache.entries.get(key).map(|(plan, _)| plan.clone()))
+            .flatten()
     }
     async fn resolve_row(
         &self,
@@ -52,17 +104,35 @@ impl PostgresStore {
     ) -> Result<ExpandedValueSet, AppError> {
         use std::collections::BTreeSet;
         use term_squid_core::{Canonical, Compose, PreparedSystem, Snapshot, MAX_RESOURCES};
-        let slot = self
-            .compose_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
         let root = Canonical::parse(url, version)?;
+        let cache_key = (
+            root.clone(),
+            id,
+            system_context.map(|(s, v)| (s.to_owned(), v.to_owned())),
+        );
+        // A fresh autocommit statement is the warm operation's snapshot boundary.
+        // No time-based generation cache: a request starting after a CLI commit sees it.
+        let observed: i64 =
+            sqlx::query_scalar("SELECT generation FROM terminology_generation WHERE singleton")
+                .fetch_one(&self.pool)
+                .await?;
+        if let Some(result) = self.cached_plan(observed, &cache_key).await {
+            return Ok(result);
+        }
+        // Only cold work is serialized. Recheck in a new snapshot after waiting for admission.
+        let preparation = self.preparation.clone().lock_owned().await;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
+        let generation: i64 =
+            sqlx::query_scalar("SELECT generation FROM terminology_generation WHERE singleton")
+                .fetch_one(&mut *tx)
+                .await?;
+        if let Some(result) = self.cached_plan(generation, &cache_key).await {
+            tx.commit().await?;
+            return Ok(result);
+        }
         let mut snapshot = Snapshot::default();
         let mut raw_systems = std::collections::BTreeMap::new();
         let mut bytes_remaining: i64 = 32 * 1024 * 1024;
@@ -130,8 +200,7 @@ impl PostgresStore {
             snapshot.value_sets.insert(key, compose);
         }
         tx.commit().await?;
-        tokio::task::spawn_blocking(move || -> Result<ExpandedValueSet, AppError> {
-            let _slot = slot;
+        let (_preparation, result) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
             let mut concept_count = 0;
             for (key, resource) in raw_systems {
                 let definition = serde_json::from_value(resource)
@@ -145,13 +214,32 @@ impl PostgresStore {
                 }
                 snapshot.systems.insert(key, prepared);
             }
-            Ok(ExpandedValueSet {
-                resource: base_resource.expect("Root is resolved"),
-                members: snapshot.expand(&root)?,
-            })
+            let result = ExpandedValueSet {
+                resource: std::sync::Arc::new(base_resource.expect("Root is resolved")),
+                members: std::sync::Arc::new(term_squid_core::PreparedValueSet::prepare(
+                    &snapshot, &root,
+                )?),
+            };
+            // Keep preparation single-flight even if the awaiting HTTP request is cancelled.
+            Ok((preparation, result))
         })
         .await
-        .map_err(|e| AppError::Internal(e.into()))?
+        .map_err(|e| AppError::Internal(e.into()))??;
+        let key_bytes = cache_key.0.url.len()
+            + cache_key.0.version.as_ref().map_or(0, String::len)
+            + cache_key.2.as_ref().map_or(0, |(s, v)| s.len() + v.len());
+        let charge = key_bytes * 8
+            + result.members.memory_charge()
+            + serde_json::to_vec(result.resource.as_ref())
+                .map_err(|e| AppError::Internal(e.into()))?
+                .len()
+                * 64
+            + 4096;
+        self.prepared
+            .lock()
+            .await
+            .publish(generation, cache_key, result.clone(), charge);
+        Ok(result)
     }
 }
 
@@ -760,5 +848,50 @@ impl TerminologyStore for PostgresStore {
                 vec![]
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[tokio::test]
+    async fn late_generation_observation_and_publication_cannot_replace_newer_plan() {
+        use term_squid_core::{Canonical, Compose, PreparedSystem, PreparedValueSet, Snapshot};
+        let root = Canonical::parse("urn:set", None).unwrap();
+        let mut snapshot = Snapshot::default();
+        snapshot.systems.insert(Canonical::parse("urn:codes", None).unwrap(), PreparedSystem::prepare(
+            serde_json::from_value(serde_json::json!({"url":"urn:codes","content":"complete","concept":[{"code":"new"}]})).unwrap()).unwrap());
+        snapshot.value_sets.insert(
+            root.clone(),
+            serde_json::from_value::<Compose>(
+                serde_json::json!({"include":[{"system":"urn:codes"}]}),
+            )
+            .unwrap(),
+        );
+        let plan = ExpandedValueSet {
+            resource: std::sync::Arc::new(serde_json::json!({"generation":2})),
+            members: std::sync::Arc::new(PreparedValueSet::prepare(&snapshot, &root).unwrap()),
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let store = PostgresStore::new(pool);
+        let key = (root, None, None);
+        store
+            .prepared
+            .lock()
+            .await
+            .publish(2, key.clone(), plan.clone(), 4096);
+        // Model a generation-1 SELECT finishing after a generation-2 reader has published.
+        assert!(store.cached_plan(1, &key).await.is_none());
+        // Model generation-1 preparation finishing after the same publication.
+        store
+            .prepared
+            .lock()
+            .await
+            .publish(1, key.clone(), plan.clone(), 1024);
+        let retained = store.cached_plan(2, &key).await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&retained.members, &plan.members));
+        assert_eq!(store.prepared.lock().await.bytes, 4096);
     }
 }

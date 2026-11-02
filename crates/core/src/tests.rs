@@ -275,3 +275,34 @@ fn unsupported_standard_property_meanings_are_not_ignored() {
     // Import can retain lifecycle data without pretending to evaluate its active-code policy.
     assert!(PreparedSystem::prepare_for_import(serde_json::from_value(retired).unwrap()).is_ok());
 }
+
+#[test]
+fn prepared_membership_matches_expansion_and_survives_snapshot_drop() {
+    let s = snapshot(
+        json!({"include":[{"system":"urn:codes"}],"exclude":[{"system":"urn:codes","concept":[{"code":"b"}]}]}),
+    );
+    let plan = PreparedValueSet::prepare(&s, &canonical("urn:set")).unwrap();
+    drop(s);
+    assert!(plan.find("urn:codes", Some("1"), "a").is_some());
+    for (system, version, code) in [
+        ("urn:codes", Some("2"), "a"),
+        ("urn:codes", None, "b"),
+        ("urn:codes", None, "missing"),
+        ("urn:other", None, "a"),
+    ] {
+        assert!(plan.find(system, version, code).is_none());
+    }
+    assert_eq!(plan.values().count(), 3);
+    assert!(plan.memory_charge() > 0);
+}
+#[test]
+fn prepared_index_preserves_case_policy() {
+    let mut s = snapshot(json!({"include":[{"system":"urn:codes"}]}));
+    s.systems
+        .get_mut(&canonical("urn:codes"))
+        .unwrap()
+        .case_sensitive = false;
+    let plan = PreparedValueSet::prepare(&s, &canonical("urn:set")).unwrap();
+    assert_eq!(plan.find("urn:codes", Some("1"), "A").unwrap().code, "a");
+    assert!(plan.find("URN:CODES", None, "a").is_none());
+}

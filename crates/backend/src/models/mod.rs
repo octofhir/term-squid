@@ -84,7 +84,8 @@ pub struct ResolvedConcept {
 }
 
 /// Resource and members resolved from the same database snapshot.
+#[derive(Clone)]
 pub struct ExpandedValueSet {
-    pub resource: serde_json::Value,
-    pub members: term_squid_core::Members,
+    pub resource: std::sync::Arc<serde_json::Value>,
+    pub members: std::sync::Arc<term_squid_core::PreparedValueSet>,
 }
