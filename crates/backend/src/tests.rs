@@ -515,3 +515,249 @@ async fn terminology_http_versions_compose_and_refresh() {
         .unwrap();
     admin.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn prepared_translation_versions_updates_and_concurrency() {
+    let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
+    let admin = PgPool::connect(&url).await.unwrap();
+    let schema = format!("test_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let search_path = format!("SET search_path TO {schema}, public");
+    let pool = database::pool_options(4)
+        .after_connect(move |conn, _| {
+            let sql = search_path.clone();
+            Box::pin(async move {
+                sqlx::query(&sql).execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let content = |version: &str, code: &str, display: &str| json!({"resourceType":"ConceptMap","url":"urn:map","version":version,"group":[{"source":"urn:s","target":"urn:t","element":[{"code":"a","display":"Source A","target":[{"code":code,"display":display,"equivalence":"wider"}]}]}]});
+    let v1 = Uuid::new_v4();
+    let v2 = Uuid::new_v4();
+    for (id, version, code) in [(v1, "1", "b"), (v2, "2", "c")] {
+        sqlx::query("INSERT INTO concept_maps(id,url,version,status,content) VALUES($1,'urn:map',$2,'active',$3)")
+            .bind(id).bind(version).bind(sqlx::types::Json(content(version,code,code))).execute(&pool).await.unwrap();
+    }
+    sqlx::query("UPDATE concept_maps SET updated_at=NOW()+interval '1 minute' WHERE id=$1")
+        .bind(v2)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let store = store.clone();
+        readers.push(tokio::spawn(async move {
+            store
+                .prepare_concept_map("urn:map|1", None, None)
+                .await
+                .unwrap()
+        }));
+    }
+    let mut plans = Vec::new();
+    for reader in readers {
+        plans.push(reader.await.unwrap());
+    }
+    for plan in &plans {
+        assert!(Arc::ptr_eq(&plans[0], plan));
+    }
+    let old = plans.remove(0);
+    // Even a warm plan must fail closed when ConceptMap write tracking is unavailable.
+    sqlx::query("UPDATE terminology_generation SET maps_tracked=false WHERE singleton")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store
+        .prepare_concept_map("urn:map|1", None, None)
+        .await
+        .is_err());
+    sqlx::query("UPDATE terminology_generation SET maps_tracked=true WHERE singleton")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        old.translate("urn:s", "a", None, false).unwrap()[0].code,
+        "b"
+    );
+    assert!(old
+        .translate("urn:s", "new", None, false)
+        .unwrap()
+        .is_empty());
+    assert!(old
+        .translate("urn:t", "future", None, true)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .prepare_concept_map("urn:map|1", Some("2"), None)
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .prepare_concept_map("urn:map", None, None)
+            .await
+            .unwrap()
+            .translate("urn:s", "a", None, false)
+            .unwrap()[0]
+            .code,
+        "c"
+    );
+    assert_eq!(
+        store
+            .prepare_concept_map("urn:instance", None, Some(v1))
+            .await
+            .unwrap()
+            .translate("urn:s", "a", None, false)
+            .unwrap()[0]
+            .code,
+        "b"
+    );
+    let mut writer = pool.begin().await.unwrap();
+    let updated = json!({"resourceType":"ConceptMap","url":"urn:map","version":"1","group":[{"source":"urn:s","target":"urn:t","element":[{"code":"new","display":"New source","target":[{"code":"future","display":"New target"}]}]}]});
+    sqlx::query("UPDATE concept_maps SET content=$1 WHERE id=$2")
+        .bind(sqlx::types::Json(&updated))
+        .bind(v1)
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    let during = store
+        .prepare_concept_map("urn:map", Some("1"), None)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&during, &old));
+    writer.commit().await.unwrap();
+    let fresh = store
+        .prepare_concept_map("urn:map", Some("1"), None)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&fresh, &old));
+    assert!(fresh
+        .translate("urn:s", "a", None, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        fresh.translate("urn:s", "new", None, false).unwrap()[0].code,
+        "future"
+    );
+    assert_eq!(
+        fresh.translate("urn:t", "future", None, true).unwrap()[0].code,
+        "new"
+    );
+    assert_eq!(
+        old.translate("urn:s", "a", None, false).unwrap()[0].code,
+        "b"
+    );
+    let mut writer = pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM concept_maps WHERE id=$1")
+        .bind(v1)
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    writer.rollback().await.unwrap();
+    assert!(Arc::ptr_eq(
+        &fresh,
+        &store
+            .prepare_concept_map("urn:map", Some("1"), None)
+            .await
+            .unwrap()
+    ));
+    assert!(store
+        .prepare_concept_map("urn:map", Some("3"), None)
+        .await
+        .is_err());
+    let v3 = Uuid::new_v4();
+    sqlx::query("INSERT INTO concept_maps(id,url,version,status,content,updated_at) VALUES($1,'urn:map','3','active',$2,NOW()+interval '2 minutes')")
+        .bind(v3).bind(sqlx::types::Json(content("3","d","d"))).execute(&pool).await.unwrap();
+    assert_eq!(
+        store
+            .prepare_concept_map("urn:map", None, None)
+            .await
+            .unwrap()
+            .translate("urn:s", "a", None, false)
+            .unwrap()[0]
+            .code,
+        "d"
+    );
+    let app = api::create_router(store.clone());
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/r4/ConceptMap/$translate?url=urn:map%7C1&system=urn:t&code=future&reverse=true",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+    assert_eq!(
+        body["parameter"][1]["part"][1]["valueCoding"]["code"],
+        "new"
+    );
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("/r4/ConceptMap/{v1}/$translate?system=urn:s&code=new"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+    let (status,body)=request(&app,"POST","/r4/ConceptMap/$translate",json!({"resourceType":"Parameters","parameter":[{"name":"url","valueUri":"urn:map"},{"name":"conceptMapVersion","valueString":"2"},{"name":"system","valueUri":"urn:s"},{"name":"code","valueCode":"a"}]})).await;
+    assert_eq!(status, 200);
+    assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+    assert_eq!(body["parameter"][1]["part"][1]["valueCoding"]["code"], "c");
+    // Pressure a fixed entry budget without mutating the generation between reads.
+    for version in 10..20 {
+        let version = version.to_string();
+        sqlx::query("INSERT INTO concept_maps(id,url,version,status,content) VALUES($1,'urn:map',$2,'active',$3)").bind(Uuid::new_v4()).bind(&version).bind(sqlx::types::Json(content(&version,"x","X"))).execute(&pool).await.unwrap();
+    }
+    let retained = store
+        .prepare_concept_map("urn:map", Some("1"), None)
+        .await
+        .unwrap();
+    for version in 10..20 {
+        store
+            .prepare_concept_map("urn:map", Some(&version.to_string()), None)
+            .await
+            .unwrap();
+    }
+    let rebuilt = store
+        .prepare_concept_map("urn:map", Some("1"), None)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&retained, &rebuilt));
+    assert_eq!(
+        retained.translate("urn:s", "new", None, false).unwrap()[0].code,
+        "future"
+    );
+    sqlx::query("DELETE FROM concept_maps WHERE id=$1")
+        .bind(v1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store
+        .prepare_concept_map("urn:map", Some("1"), None)
+        .await
+        .is_err());
+    sqlx::query("TRUNCATE concept_maps CASCADE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store
+        .prepare_concept_map("urn:map", None, None)
+        .await
+        .is_err());
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}

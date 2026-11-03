@@ -12,6 +12,8 @@ pub struct PostgresStore {
     pool: PgPool,
     prepared: std::sync::Arc<tokio::sync::Mutex<PlanCache>>,
     preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
+    maps: tokio::sync::Mutex<MapCache>,
+    map_preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 // Cache locking never spans SQL or preparation. Generations only advance: an older
@@ -53,12 +55,35 @@ impl PlanCache {
     }
 }
 
+type MapKey = (term_squid_core::Canonical, Option<Uuid>);
+const MAP_CACHE_BYTES: usize = 16 * 1024 * 1024;
+#[derive(Default)]
+struct MapCache {
+    generation: i64,
+    bytes: usize,
+    entries: std::collections::BTreeMap<
+        MapKey,
+        (std::sync::Arc<term_squid_core::PreparedConceptMap>, usize),
+    >,
+}
+impl MapCache {
+    fn advance(&mut self, generation: i64) {
+        if generation > self.generation {
+            self.entries.clear();
+            self.bytes = 0;
+            self.generation = generation;
+        }
+    }
+}
+
 impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
             prepared: std::sync::Arc::new(tokio::sync::Mutex::new(PlanCache::default())),
             preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            maps: tokio::sync::Mutex::new(MapCache::default()),
+            map_preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
     #[cfg(test)]
@@ -71,6 +96,85 @@ impl PostgresStore {
         (cache.generation == generation)
             .then(|| cache.entries.get(key).map(|(plan, _)| plan.clone()))
             .flatten()
+    }
+    async fn cached_map(
+        &self,
+        generation: i64,
+        key: &MapKey,
+    ) -> Option<std::sync::Arc<term_squid_core::PreparedConceptMap>> {
+        let mut cache = self.maps.lock().await;
+        cache.advance(generation);
+        if cache.generation == generation {
+            cache.entries.get(key).map(|(plan, _)| plan.clone())
+        } else {
+            None
+        }
+    }
+    async fn map_snapshot(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<Uuid>,
+    ) -> Result<std::sync::Arc<term_squid_core::PreparedConceptMap>, AppError> {
+        let root = term_squid_core::Canonical::parse(url, version)?;
+        let key = (root.clone(), id);
+        let observed: i64 = sqlx::query_scalar(
+            "SELECT generation FROM terminology_generation WHERE singleton AND maps_tracked",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if let Some(plan) = self.cached_map(observed, &key).await {
+            return Ok(plan);
+        }
+        let admission = self.map_preparation.clone().lock_owned().await;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let generation: i64 = sqlx::query_scalar(
+            "SELECT generation FROM terminology_generation WHERE singleton AND maps_tracked",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(plan) = self.cached_map(generation, &key).await {
+            tx.commit().await?;
+            return Ok(plan);
+        }
+        let row: Option<Option<sqlx::types::Json<serde_json::Value>>> = sqlx::query_scalar(
+            "SELECT CASE WHEN octet_length(content::text) <= 33554432 THEN content END FROM concept_maps WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+            .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
+        let content = row
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "ConceptMap {} version {:?} not found",
+                    root.url, root.version
+                ))
+            })?
+            .ok_or_else(|| AppError::BadRequest("ConceptMap input exceeds 32 MiB".into()))?
+            .0;
+        tx.commit().await?;
+        let (_admission, plan) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+            let plan = std::sync::Arc::new(term_squid_core::PreparedConceptMap::prepare(&content)?);
+            Ok((admission, plan))
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))??;
+        let charge = plan.memory_charge()
+            + 4096
+            + (root.url.len() + root.version.as_ref().map_or(0, String::len)) * 8;
+        let mut cache = self.maps.lock().await;
+        cache.advance(generation);
+        if generation == cache.generation && charge <= MAP_CACHE_BYTES {
+            if cache.entries.len() >= 8 || cache.bytes + charge > MAP_CACHE_BYTES {
+                cache.entries.clear();
+                cache.bytes = 0;
+            }
+            if let Some((_, previous)) = cache.entries.insert(key, (plan.clone(), charge)) {
+                cache.bytes -= previous;
+            }
+            cache.bytes += charge;
+        }
+        Ok(plan)
     }
     async fn resolve_row(
         &self,
@@ -245,6 +349,14 @@ impl PostgresStore {
 
 #[async_trait]
 impl TerminologyStore for PostgresStore {
+    async fn prepare_concept_map(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<Uuid>,
+    ) -> Result<std::sync::Arc<term_squid_core::PreparedConceptMap>, AppError> {
+        self.map_snapshot(url, version, id).await
+    }
     async fn resolve_concept(
         &self,
         url: &str,

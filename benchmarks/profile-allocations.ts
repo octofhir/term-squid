@@ -5,8 +5,9 @@ if (!process.argv[2]) throw new Error('Usage: bun benchmarks/profile-allocations
 const probe = async () => (await fetch(base+'/__allocation-probe')).json();
 const request = async (i: number) => {
   const membership = process.env.PROFILE_OPERATION === 'membership';
-  const code = i % 5 === 0 ? 'missing' : 'C'+String(i%10000).padStart(5,'0');
-  const r = await fetch(base+(membership ? '/r4/ValueSet/$validate-code?url=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fsubset&system=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fcodes&code=' : '/r4/CodeSystem/$validate-code?system=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fcodes&version=1.0.0&code=')+code);
+  const translation = process.env.PROFILE_OPERATION === 'translation';
+  const code = i % 5 === 0 ? 'missing' : 'C'+String(i % (translation ? 128 : 10000)).padStart(5,'0');
+  const r = await fetch(base+(translation ? '/r4/ConceptMap/$translate?url=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fmap&system=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fcodes&targetsystem=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Ftargets&reverse=false&code=' : membership ? '/r4/ValueSet/$validate-code?url=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fsubset&system=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fcodes&code=' : '/r4/CodeSystem/$validate-code?system=http%3A%2F%2Fexample.org%2Fterm-squid-benchmark%2Fcodes&version=1.0.0&code=')+code);
   const b = await r.json();
   if (r.status !== 200 || b.parameter?.find((p:any)=>p.name==='result')?.valueBoolean !== (i%5!==0 && (!membership || (i%10000 < 256 && i%10000 !== 42)))) throw new Error('semantic failure');
 };

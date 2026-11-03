@@ -36,6 +36,13 @@ pub trait TerminologyStore: Send + Sync {
     async fn delete_value_set(&self, url: &str, version: Option<&str>) -> Result<(), AppError>;
     async fn search_value_sets(&self, params: &SearchParams) -> Result<Vec<ValueSet>, AppError>;
 
+    async fn prepare_concept_map(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        id: Option<uuid::Uuid>,
+    ) -> Result<std::sync::Arc<term_squid_core::PreparedConceptMap>, AppError>;
+
     // ConceptMap operations
     async fn create_concept_map(&self, cm: ConceptMap) -> Result<ConceptMap, AppError>;
     async fn get_concept_map(

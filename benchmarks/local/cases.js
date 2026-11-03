@@ -95,9 +95,19 @@ export const CASES = [
   ...[false, true].map((reverse) => ({
     id: reverse ? 'TS-CM02' : 'TS-CM01', name: reverse ? 'Reverse translation' : 'Forward translation',
     probes: [probe(translate(7, reverse), (b) => translation(b, reverse ? SYSTEM : TARGET,
-      reverse ? code(7) : targetCode(7)), 'translation returns the mapped code and system')],
-    sample(i) { const n = i % 128; return probe(translate(n, reverse), (b) => translation(b,
-      reverse ? SYSTEM : TARGET, reverse ? code(n) : targetCode(n)), 'translation returns the mapped code and system'); },
+      reverse ? code(7) : targetCode(7)), 'translation returns the mapped code and system'),
+      probe(query('/ConceptMap/$translate', {url: MAP, system: reverse ? TARGET : SYSTEM,
+        code: 'missing', targetsystem: reverse ? SYSTEM : TARGET, reverse: String(reverse)}),
+      (b) => bool(b) === false, 'missing mapping returns result=false')],
+    sample(i) {
+      if (i % 5 === 0) return probe(query('/ConceptMap/$translate', {
+        url: MAP, system: reverse ? TARGET : SYSTEM, code: `missing-${i % 10000}`,
+        targetsystem: reverse ? SYSTEM : TARGET, reverse: String(reverse),
+      }), (b) => bool(b) === false, 'missing mapping returns result=false');
+      const n = i % 128;
+      return probe(translate(n, reverse), (b) => translation(b,
+        reverse ? SYSTEM : TARGET, reverse ? code(n) : targetCode(n)), 'translation returns the mapped code and system');
+    },
   })),
 ];
 

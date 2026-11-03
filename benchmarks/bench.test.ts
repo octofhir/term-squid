@@ -33,6 +33,21 @@ describe('benchmark correctness gates', () => {
     expect(counts).toEqual({included: 400, excluded: 200, outside: 200, missing: 200});
     expect(seen.size).toBeGreaterThan(500);
   });
+  test('translation load checks changing positive and missing codes in both directions', () => {
+    for (const id of ['TS-CM01', 'TS-CM02']) {
+      const definition = CASES.find((c) => c.id === id)!;
+      const missing = definition.sample(0);
+      const positive = definition.sample(1);
+      const yes = {resourceType: 'Parameters', parameter: [{name: 'result', valueBoolean: true}]};
+      const no = {resourceType: 'Parameters', parameter: [{name: 'result', valueBoolean: false}]};
+      expect(accepts(missing, 200, no)).toBe(true);
+      expect(accepts(missing, 200, yes)).toBe(false);
+      expect(accepts(positive, 200, no)).toBe(false);
+      const samples = Array.from({length: 100}, (_,i) => definition.sample(i));
+      expect(samples.filter((p) => p.request.path.includes('missing-')).length).toBe(20);
+      expect(new Set(samples.map((p) => p.request.path)).size).toBeGreaterThan(80);
+    }
+  });
   test('an expansion with duplicate or excluded codes cannot pass', () => {
     const p = CASES.find((c) => c.id === 'TS-EX01')!.probes[0];
     const contains = Array.from({length: 50}, (_, i) => ({system: SYSTEM, code: code(i < 42 ? i : i + 1)}));

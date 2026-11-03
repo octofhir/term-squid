@@ -1,4 +1,7 @@
 //! Storage-independent terminology primitives and bounded, immutable compose evaluation.
+mod translation;
+pub use translation::{PreparedConceptMap, TranslationMatch};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 

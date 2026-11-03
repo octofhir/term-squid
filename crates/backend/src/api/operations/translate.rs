@@ -104,13 +104,11 @@ pub async fn translate_instance_get(
         .system
         .ok_or_else(|| AppError::BadRequest("system parameter required".to_string()))?;
 
-    let concept_map = store
-        .get_concept_map_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ConceptMap {id} not found")))?;
-
-    translate_map(
-        &concept_map.content.0,
+    let plan = store
+        .prepare_concept_map("urn:term-squid:instance", None, Some(id))
+        .await?;
+    translate_plan(
+        &plan,
         &system,
         &code,
         params.target_system.as_deref(),
@@ -140,12 +138,10 @@ pub async fn translate_instance_post(
     let target = params.get_string("targetsystem");
     let reverse = params.get_boolean("reverse").unwrap_or(false);
 
-    let concept_map = store
-        .get_concept_map_by_id(&id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ConceptMap {id} not found")))?;
-
-    translate_map(&concept_map.content.0, system, code, target, reverse)
+    let plan = store
+        .prepare_concept_map("urn:term-squid:instance", None, Some(id))
+        .await?;
+    translate_plan(&plan, system, code, target, reverse)
 }
 
 async fn perform_translate(
@@ -160,19 +156,44 @@ async fn perform_translate(
     let url = concept_map_url.ok_or_else(|| {
         AppError::BadRequest("ConceptMap URL is required; map search is not supported".into())
     })?;
-    let map = store
-        .get_concept_map(url, map_version)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("ConceptMap '{url}' not found")))?;
-    translate_map(
-        &map.content.0,
-        source_system,
-        source_code,
-        target_system,
-        reverse,
-    )
+    let plan = store.prepare_concept_map(url, map_version, None).await?;
+    translate_plan(&plan, source_system, source_code, target_system, reverse)
 }
 
+fn translate_plan(
+    plan: &term_squid_core::PreparedConceptMap,
+    source_system: &str,
+    source_code: &str,
+    target_system: Option<&str>,
+    reverse: bool,
+) -> Result<Json<Parameters>, AppError> {
+    let matches = plan
+        .translate(source_system, source_code, target_system, reverse)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let mut parameters = vec![Parameter::boolean("result", !matches.is_empty())];
+    if matches.is_empty() {
+        parameters.push(Parameter::string(
+            "message",
+            format!("No translation found for code '{source_code}' in system '{source_system}'"),
+        ));
+    }
+    for mapped in matches {
+        let mut coding = Coding::new(mapped.system, mapped.code);
+        if let Some(display) = mapped.display {
+            coding = coding.with_display(display);
+        }
+        parameters.push(Parameter::part(
+            "match",
+            vec![
+                Parameter::code("equivalence", mapped.equivalence),
+                Parameter::coding("concept", coding),
+            ],
+        ));
+    }
+    Ok(Json(Parameters::with_parameters(parameters)))
+}
+
+#[cfg(test)]
 fn translate_map(
     content: &serde_json::Value,
     source_system: &str,
@@ -180,123 +201,13 @@ fn translate_map(
     target_system: Option<&str>,
     reverse: bool,
 ) -> Result<Json<Parameters>, AppError> {
-    let mut matches = Vec::new();
-
-    {
-        if let Some(groups) = content.get("group").and_then(|g| g.as_array()) {
-            for group in groups {
-                let group_source = group.get("source").and_then(|s| s.as_str());
-                let group_target = group.get("target").and_then(|t| t.as_str());
-
-                // Check if this group matches our source system
-                let matches_source = if reverse {
-                    group_target == Some(source_system)
-                } else {
-                    group_source == Some(source_system)
-                };
-
-                if matches_source {
-                    // Look through elements for our code
-                    if let Some(elements) = group.get("element").and_then(|e| e.as_array()) {
-                        for element in elements {
-                            let element_code = element.get("code").and_then(|c| c.as_str());
-
-                            if reverse || element_code == Some(source_code) {
-                                // Found a match, extract targets
-                                if let Some(targets) =
-                                    element.get("target").and_then(|t| t.as_array())
-                                {
-                                    for target in targets {
-                                        let target_code =
-                                            target.get("code").and_then(|c| c.as_str());
-                                        let target_display =
-                                            target.get("display").and_then(|d| d.as_str());
-                                        let equivalence = target
-                                            .get("equivalence")
-                                            .and_then(|e| e.as_str())
-                                            .unwrap_or("equivalent");
-
-                                        if target.get("dependsOn").is_some()
-                                            || target.get("product").is_some()
-                                        {
-                                            return Err(AppError::BadRequest(
-                                                "Conditional mappings are not supported".into(),
-                                            ));
-                                        }
-                                        if matches!(equivalence, "unmatched" | "disjoint") {
-                                            continue;
-                                        }
-                                        if reverse && target_code != Some(source_code) {
-                                            continue;
-                                        }
-                                        let mapped_code =
-                                            if reverse { element_code } else { target_code };
-                                        let mapped_display = if reverse {
-                                            element.get("display").and_then(|d| d.as_str())
-                                        } else {
-                                            target_display
-                                        };
-                                        let equivalence = if reverse {
-                                            match equivalence {
-                                                "wider" => "narrower",
-                                                "narrower" => "wider",
-                                                "subsumes" => "specializes",
-                                                "specializes" => "subsumes",
-                                                e => e,
-                                            }
-                                        } else {
-                                            equivalence
-                                        };
-                                        if let Some(target_code) = mapped_code {
-                                            let target_system_str = if reverse {
-                                                group_source.unwrap_or("")
-                                            } else {
-                                                group_target.unwrap_or("")
-                                            };
-
-                                            // Filter by target system if specified
-                                            if let Some(ts) = target_system {
-                                                if target_system_str != ts {
-                                                    continue;
-                                                }
-                                            }
-
-                                            let mut coding =
-                                                Coding::new(target_system_str, target_code);
-                                            if let Some(display) = mapped_display {
-                                                coding = coding.with_display(display);
-                                            }
-
-                                            matches.push(Parameter::part(
-                                                "match",
-                                                vec![
-                                                    Parameter::code("equivalence", equivalence),
-                                                    Parameter::coding("concept", coding),
-                                                ],
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut result_params = vec![Parameter::boolean("result", !matches.is_empty())];
-
-    if matches.is_empty() {
-        result_params.push(Parameter::string(
-            "message",
-            format!("No translation found for code '{source_code}' in system '{source_system}'"),
-        ));
-    } else {
-        result_params.extend(matches);
-    }
-
-    Ok(Json(Parameters::with_parameters(result_params)))
+    translate_plan(
+        &term_squid_core::PreparedConceptMap::prepare(content)?,
+        source_system,
+        source_code,
+        target_system,
+        reverse,
+    )
 }
 
 #[cfg(test)]

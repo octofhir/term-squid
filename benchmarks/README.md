@@ -177,3 +177,10 @@ patterns: hot connection checkouts skip an extra ping and idle sockets are check
 second. TCP_NODELAY remains an experiment; SQLx's return-to-pool check remains.
 The idle threshold does not cache data generations. Performance reports compare the same
 harness with the previous binary and the pinned local FHIRsmith, keeping pool capacity fixed.
+
+Prepared translation requires migration `20261102000003`. Its ConceptMap trigger and schema
+guard preserve cross-process update freshness. See [the translation report](../docs/TRANSLATION_PERFORMANCE_REPORT.md).
+The translation workload now has 20% changing missing codes and original positive checks
+in both directions; compare both binaries with this same harness. `PROFILE_OPERATION=translation`
+selects the separate allocation probe. The ConceptMap cache has its own eight-entry/16 MiB
+conservative charge; the existing ValueSet budget is unchanged.

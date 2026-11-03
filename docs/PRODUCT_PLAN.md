@@ -39,7 +39,7 @@ Local verification artifacts: `.benchmarks/results/audit-preflight/term-squid/`.
 
 The November 2 increment implements the seven local scenarios, extracts `term-squid-core`, and adds separate CPU/allocation profiling and sustained 1/10/50 VU measurements. A local pinned FHIRsmith R4 instance now runs the synthetic fixtures. See [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) for results, reference differences and limits; milestones 1 and 2 remain incomplete. The primary five-connection validation result is 4,448 req/s at 10 VU versus 196 req/s before (22.65×); a separate 32-connection experiment peaks at 7,156 req/s. The >12k and overall 3× reference goals are not achieved. Final compose rechecks remain near 52 req/s, making reusable preparation the next measured priority.
 
-The next increment adds bounded immutable finite plans with transactional cross-process invalidation. See [PREPARED_DATA_REPORT.md](PREPARED_DATA_REPORT.md) for evidence and remaining shared-snapshot/admission work. The subsequent [warm-read increment](WARM_READ_REPORT.md) makes generation checks concurrent while retaining post-commit freshness. The [transport increment](TRANSPORT_PERFORMANCE_REPORT.md) evaluates existing OctoFHIR pool and TCP patterns against the shared local FHIRsmith suite.
+The next increment adds bounded immutable finite plans with transactional cross-process invalidation. See [PREPARED_DATA_REPORT.md](PREPARED_DATA_REPORT.md) for evidence and remaining shared-snapshot/admission work. The subsequent [warm-read increment](WARM_READ_REPORT.md) makes generation checks concurrent while retaining post-commit freshness. The [transport increment](TRANSPORT_PERFORMANCE_REPORT.md) evaluates existing OctoFHIR pool and TCP patterns against the shared local FHIRsmith suite. The following [translation increment](TRANSLATION_PERFORMANCE_REPORT.md) adds bounded forward/reverse ConceptMap plans and generation tracking to address repeated resource decoding.
 
 Remaining work:
 
@@ -130,6 +130,20 @@ Basic limits should appear while building the engine; this milestone completes t
 - Installation, import and updates through CLI/UI; public terminology CRUD is not a first-release requirement.
 
 Acceptance: a new instance deploys from the documentation, restores content and passes smoke/conformance checks; updates do not interrupt or silently change in-flight operations.
+
+## Milestone 6: Branded UI and Shared Components
+
+Rewrite the terminology UI to follow OctoFHIR server branding: shared colors, typography, spacing, icons, navigation and interaction patterns. Prefer the server's common UI kit over maintaining an unrelated component system.
+
+The current terminology frontend uses SolidJS. The inspected server package `@octofhir/ui-kit` targets React 19, exposes source entry points and is marked `private: true`; it is not currently a published dependency that this standalone product can assume is available. Reuse therefore requires an explicit framework and distribution decision before rewriting screens.
+
+1. Audit the server design tokens, component APIs and existing terminology screens; define the branding and accessibility requirements to preserve.
+2. Evaluate migrating the frontend to React to consume the common kit directly versus sharing tokens/styles and adapting the required components. Record the maintenance cost of any duplicated components.
+3. Choose a reproducible, versioned delivery mechanism for the unpublished kit: a private registry/package artifact, or an interim source snapshot with provenance, licensing and a documented update process. Publishing the kit can be a separate infrastructure task; do not assume public npm availability or depend on an unversioned sibling-checkout path.
+4. Rewrite the existing screens using the chosen shared foundation, preserving terminology workflows, version selection, pagination, loading/empty/error states and visible unsupported-operation errors. Keep the standalone API boundary and embedded frontend build working.
+5. Verify the visual result against server branding and check keyboard navigation, contrast and responsive layouts.
+
+Acceptance: the UI follows OctoFHIR branding; the shared-kit/framework decision and package delivery are documented; a clean checkout builds in CI without a local `server-rs` directory or an unavailable public package; existing terminology workflows remain usable. This work does not require embedding the terminology engine or database into OctoFHIR.
 
 ## Later Development
 
