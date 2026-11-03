@@ -1,6 +1,23 @@
 import {describe, expect, test} from 'bun:test';
-import {targetUrl, selectedTests, validMeasurement} from './bench';
-import {CASES, accepts, resources, SYSTEM, code, display, VERSION} from './local/cases';
+import {targetUrl, selectedTests, validMeasurement, sourceFingerprint} from './bench';
+import {CASES, accepts, resources, SYSTEM, code, display, VERSION, CONCEPT_COUNT} from './local/cases';
+
+const outcomeResponse = (outcome: string) => ({
+  resourceType: 'Parameters', parameter: [{name: 'outcome', valueCode: outcome}],
+});
+const subsumptionOutcomes = ['subsumes', 'subsumed-by', 'equivalent', 'not-subsumed'];
+
+function fixtureSubsumption(path: string) {
+  const params = new URL(path, 'http://localhost').searchParams;
+  expect(params.get('system')).toBe(SYSTEM);
+  expect(params.get('version')).toBe(VERSION);
+  const a = params.get('codeA')!;
+  const b = params.get('codeB')!;
+  const known = (c: string) => c === 'root' || /^C\d{5}$/.test(c) && Number(c.slice(1)) < CONCEPT_COUNT;
+  expect(known(a)).toBe(true);
+  expect(known(b)).toBe(true);
+  return a === b ? 'equivalent' : a === 'root' ? 'subsumes' : b === 'root' ? 'subsumed-by' : 'not-subsumed';
+}
 
 describe('benchmark correctness gates', () => {
   test('a code existing in a CodeSystem is insufficient for ValueSet membership', () => {
@@ -48,6 +65,64 @@ describe('benchmark correctness gates', () => {
       expect(new Set(samples.map((p) => p.request.path)).size).toBeGreaterThan(80);
     }
   });
+  test('subsumption preflight covers all four outcomes and rejects malformed results', () => {
+    const definition = CASES.find((c) => c.id === 'TS-SS01')!;
+    const seen = new Set<string>();
+    for (const p of definition.probes) {
+      const expected = fixtureSubsumption(p.request.path);
+      seen.add(expected);
+      for (const outcome of subsumptionOutcomes) {
+        expect(accepts(p, 200, outcomeResponse(outcome))).toBe(outcome === expected);
+      }
+      for (const invalid of [
+        null,
+        {resourceType: 'OperationOutcome', issue: []},
+        {resourceType: 'Parameters', parameter: []},
+        {resourceType: 'Parameters', parameter: [{name: 'outcome', valueString: expected}]},
+        {resourceType: 'Parameters', parameter: {name: 'outcome', valueCode: expected}},
+        {resourceType: 'Parameters', parameter: [null]},
+        {resourceType: 'Parameters', parameter: [
+          {name: 'outcome', valueCode: expected}, {name: 'outcome', valueCode: expected},
+        ]},
+        {resourceType: 'Parameters', parameter: [
+          {name: 'outcome', valueCode: expected}, {name: 'outcome', valueCode: 'invalid'},
+        ]},
+      ]) expect(accepts(p, 200, invalid)).toBe(false);
+      expect(accepts(p, 404, outcomeResponse(expected))).toBe(false);
+      expect(accepts(p, 500, outcomeResponse(expected))).toBe(false);
+    }
+    expect(seen).toEqual(new Set(subsumptionOutcomes));
+    // Preserve the original positive preflight rather than replacing it.
+    const original = new URL(definition.probes[0].request.path, 'http://localhost').searchParams;
+    expect(original.get('codeA')).toBe('root');
+    expect(original.get('codeB')).toBe(code(7));
+  });
+  test('subsumption load has a stable mix with changing codes at every VU offset', () => {
+    const definition = CASES.find((c) => c.id === 'TS-SS01')!;
+    for (const start of [0, 137, 49 * 137, 4 * CONCEPT_COUNT - 4]) {
+      const counts = Object.fromEntries(subsumptionOutcomes.map((outcome) => [outcome, 0]));
+      const seen = new Set<string>();
+      for (let i = start; i < start + 1000; i++) {
+        const p = definition.sample(i);
+        const expected = fixtureSubsumption(p.request.path);
+        counts[expected]++;
+        seen.add(p.request.path);
+        for (const outcome of subsumptionOutcomes) {
+          expect(accepts(p, 200, outcomeResponse(outcome))).toBe(outcome === expected);
+        }
+      }
+      expect(counts).toEqual({'subsumes': 250, 'subsumed-by': 250, 'equivalent': 250, 'not-subsumed': 250});
+      expect(seen.size).toBe(1000);
+    }
+    // Each outcome must use the full code pool, not just every fourth code.
+    for (let offset = 0; offset < 4; offset++) {
+      const codes = new Set(Array.from({length: CONCEPT_COUNT}, (_, n) => {
+        const params = new URL(definition.sample(n * 4 + offset).request.path, 'http://localhost').searchParams;
+        return params.get(offset === 0 ? 'codeB' : 'codeA');
+      }));
+      expect(codes.size).toBe(CONCEPT_COUNT);
+    }
+  });
   test('an expansion with duplicate or excluded codes cannot pass', () => {
     const p = CASES.find((c) => c.id === 'TS-EX01')!.probes[0];
     const contains = Array.from({length: 50}, (_, i) => ({system: SYSTEM, code: code(i < 42 ? i : i + 1)}));
@@ -79,6 +154,15 @@ describe('benchmark correctness gates', () => {
     const vs: any = resources().find((r) => r.resourceType === 'ValueSet');
     expect(vs.compose.include[0].concept.some((c: any) => c.code === code(42))).toBe(true);
     expect(vs.compose.exclude[0].concept).toEqual([{code: code(42)}]);
+  });
+  test('harness provenance changes with source bytes and file boundaries', () => {
+    const sources = [['cases.js', 'abc'], ['load.js', 'def']] as const;
+    const hash = sourceFingerprint(sources);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(sourceFingerprint(sources)).toBe(hash);
+    expect(sourceFingerprint([['cases.js', 'abC'], ['load.js', 'def']])).not.toBe(hash);
+    expect(sourceFingerprint([['other.js', 'abc'], ['load.js', 'def']])).not.toBe(hash);
+    expect(sourceFingerprint([['cases.js', 'ab'], ['load.js', 'cdef']])).not.toBe(hash);
   });
 });
 describe('benchmark target and scenario selection', () => {

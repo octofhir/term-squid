@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -18,16 +18,6 @@ pub struct SubsumesParams {
     #[serde(rename = "codeB")]
     pub code_b: Option<String>,
     pub version: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-#[allow(dead_code)]
-pub enum SubsumptionOutcome {
-    Equivalent,
-    Subsumes,
-    SubsumedBy,
-    NotSubsumed,
 }
 
 /// GET /CodeSystem/$subsumes?system=...&codeA=...&codeB=...
@@ -121,9 +111,11 @@ async fn perform_subsumes(
     id: Option<Uuid>,
 ) -> Result<Json<Parameters>, AppError> {
     let resolved = if let Some(id) = id {
-        store.resolve_concept_by_id(&id, code_a).await?
+        store.resolve_subsumption_by_id(&id, code_a, code_b).await?
     } else {
-        store.resolve_concept(system, version, code_a).await?
+        store
+            .resolve_subsumption(system, version, code_a, code_b)
+            .await?
     }
     .ok_or_else(|| AppError::NotFound(format!("CodeSystem '{system}' not found")))?;
     if resolved.hierarchy_meaning.as_deref() != Some("is-a") {
@@ -131,32 +123,17 @@ async fn perform_subsumes(
             "Subsumption requires an is-a hierarchy".into(),
         ));
     }
-    let other = store.resolve_concept_by_id(&resolved.id, code_b).await?;
-    if resolved.code.is_none() || other.as_ref().is_none_or(|c| c.code.is_none()) {
+    if resolved.code_a.is_none() || resolved.code_b.is_none() {
         return Err(AppError::NotFound("Subsumption code not found".into()));
     }
-    let code_a = resolved.code.as_deref().expect("Code existence checked");
-    let code_b = other
-        .as_ref()
-        .and_then(|c| c.code.as_deref())
-        .expect("Code existence checked");
-    // Check for equivalence first
-    if code_a == code_b {
-        return Ok(Json(Parameters::with_parameters(vec![Parameter::code(
-            "outcome",
-            "equivalent",
-        )])));
-    }
-
-    // Query closure table for subsumption relationship
-    let outcome = store
-        .check_subsumption(&resolved.id, code_a, code_b)
-        .await?;
-
-    let outcome_code = match outcome {
-        Some(true) => "subsumes",     // A subsumes B
-        Some(false) => "subsumed-by", // A is subsumed by B
-        None => "not-subsumed",       // No relationship
+    let outcome_code = if resolved.code_a == resolved.code_b {
+        "equivalent"
+    } else {
+        match resolved.relationship {
+            Some(true) => "subsumes",
+            Some(false) => "subsumed-by",
+            None => "not-subsumed",
+        }
     };
 
     Ok(Json(Parameters::with_parameters(vec![Parameter::code(

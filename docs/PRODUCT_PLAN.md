@@ -1,6 +1,6 @@
 # term-squid Product Development Plan
 
-Status: implementation started; milestones define the proposed delivery order. Updated November 2, 2026.
+Status: implementation started; milestones define the proposed delivery order. Updated November 3, 2026.
 
 term-squid is a standalone terminology product with its own FHIR API, content, storage, CLI and UI. Its internal engine is designed as a Rust library. Embedding it in OctoFHIR or placing terminology data in the OctoFHIR database is outside the current scope.
 
@@ -40,6 +40,16 @@ Local verification artifacts: `.benchmarks/results/audit-preflight/term-squid/`.
 The November 2 increment implements the seven local scenarios, extracts `term-squid-core`, and adds separate CPU/allocation profiling and sustained 1/10/50 VU measurements. A local pinned FHIRsmith R4 instance now runs the synthetic fixtures. See [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md) for results, reference differences and limits; milestones 1 and 2 remain incomplete. The primary five-connection validation result is 4,448 req/s at 10 VU versus 196 req/s before (22.65×); a separate 32-connection experiment peaks at 7,156 req/s. The >12k and overall 3× reference goals are not achieved. Final compose rechecks remain near 52 req/s, making reusable preparation the next measured priority.
 
 The next increment adds bounded immutable finite plans with transactional cross-process invalidation. See [PREPARED_DATA_REPORT.md](PREPARED_DATA_REPORT.md) for evidence and remaining shared-snapshot/admission work. The subsequent [warm-read increment](WARM_READ_REPORT.md) makes generation checks concurrent while retaining post-commit freshness. The [transport increment](TRANSPORT_PERFORMANCE_REPORT.md) evaluates existing OctoFHIR pool and TCP patterns against the shared local FHIRsmith suite. The following [translation increment](TRANSLATION_PERFORMANCE_REPORT.md) adds bounded forward/reverse ConceptMap plans and generation tracking to address repeated resource decoding.
+
+The current [atomic-subsumption increment](SUBSUMPTION_REPORT.md) consolidates system, concept and closure reads into one statement, fixes an exact-case index-range scan and enables database regression tests in CI. All 30 Rust tests, Clippy and seven local semantic scenarios pass; a narrow [R4 core import adapter](R4_CORE_COMPATIBILITY.md) allows the pinned package to load completely. The [matched performance report](SUBSUMPTION_PERFORMANCE_REPORT.md) records 2,922 versus 1,107 previous RPS at 10 VU, but only 0.285x local FHIRsmith throughput. The overall reference objective remains unmet.
+
+The subsequent [six-workload pool selection](POOL_DEFAULT_REPORT.md) raises the server default from five to 32 connections, preserving explicit overrides. The longer confirmation wins against the pinned reference on validation, membership and expansion but still loses on lookup, subsumption and forward translation; no overall 3x or >12k claim is established.
+
+The next [prepared-hierarchy increment](HIERARCHY_REPORT.md) adds immutable closure indexes, PostgreSQL-defined case keys, bounded retention/SQL admission and transactional concept/closure invalidation. All 38 Rust tests, including large folded/fallback and concurrent update coverage, pass. At 50 VU, original subsumption reaches 6,313 RPS versus 9,384 reference; the SQL-baseline gain shrinks to 3.8% in a repeat. A separate folded workload improves 1,285 → 7,289 RPS, but the reference fails semantic preflight and is unscored there. A fresh generation query remains on every warm request; this does not fulfill the database-free hot path or establish the overall performance target.
+
+The subsequent [generation-batching increment](GENERATION_BATCHING_REPORT.md) shares only post-admission SQL observations, with bounded queues, cancellation and HTTP 503 overload. All 40 Rust tests pass. At 50 VU it reaches 19,648 membership / 8,739 expansion / 18,157 subsumption / 18,228 forward-translation RPS, exceeding the pinned reference on all four. Subsumption still loses to the reference at 1/10 VU; the batched build is 2.7% below its baseline at 1 VU. The loaded reverse-order repeat confirms 17,487 versus 9,964 reference RPS. These are the first >12k results on three synthetic prepared reads, not an overall 3x score or clinical/lookup guarantee. Fresh database observations remain mandatory.
+
+The following [prepared CodeSystem-read increment](CONCEPT_READS_REPORT.md) adds bounded immutable lookup/validation payloads with PostgreSQL case keys, one-snapshot metadata, incremental decoded-memory admission and original-SQL fallback. All 47 Rust tests pass. At 50 VU lookup reaches 16,949 RPS versus 5,819 previous / 8,325 reference; CodeSystem validation reaches 18,408 versus 5,631 / 5,105. A lookup repeat reaches 21,265 versus 8,842 reference, so its full 16,949–21,265 range remains visible. Both exceed 12k on the synthetic warm workload, but single-client losses, the 10-VU validation tail regression and added retained memory remain. No overall-suite 3x or clinical/mixed claim is established; fresh database observations remain mandatory.
 
 Remaining work:
 
@@ -102,7 +112,7 @@ Acceptance: reproducible content updates and rollback; correct selected HL7/LOIN
 
 Performance target: at least 3x throughput on the agreed priority suite without exceeding the agreed p99 limit or reducing response semantics. This is a development target, not an achieved result. Before establishing the priority-operation baseline, fix the aggregation method and acceptable regressions so weights or omitted scenarios cannot inflate the reported speedup.
 
-The user reports approximately 12,000 RPS for complex CRUD operations in OctoFHIR. Exceeding that throughput on simple terminology lookup/validation is a product target to verify on a defined workload. It is not an existing term-squid result, and complex expansions require separate targets.
+The user reports approximately 12,000 RPS for complex CRUD operations in OctoFHIR. Exceeding that throughput on simple terminology lookup/validation is a product target to verify on a defined workload. The batching and prepared-CodeSystem increments now exceed 12,000 RPS on synthetic lookup, CodeSystem/ValueSet validation, subsumption and forward translation at 50 VU. Single-client, clinical and mixed workloads still need their own evidence; these are not general capacity guarantees. Complex expansions require separate targets.
 
 Priority workloads: finite and filtered ValueSet membership, LOINC lookup/search, UCUM, paginated expansion, negative results, different versions and languages. Add large local code systems, inline CodeSystem/ValueSet inputs, imported sets and cold plan preparation. Do not limit comparisons to repeatedly querying one code.
 

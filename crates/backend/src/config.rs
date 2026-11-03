@@ -36,7 +36,8 @@ impl Config {
 }
 
 fn default_max_connections() -> u32 {
-    5
+    // Measured across common terminology reads; override for a shared DB session budget.
+    32
 }
 
 fn parse_max_connections(value: &str) -> anyhow::Result<u32> {
@@ -59,6 +60,24 @@ mod tests {
         for value in ["", "0", "65", "-1", "invalid"] {
             assert!(parse_max_connections(value).is_err());
         }
-        assert_eq!(default_max_connections(), 5);
+        assert_eq!(default_max_connections(), 32);
+    }
+
+    #[test]
+    fn public_config_defaults_to_32_and_preserves_explicit_capacity() {
+        let mut input = serde_json::json!({
+            "database_url": "postgresql://unused/unused",
+            "server_host": "127.0.0.1",
+            "server_port": 8081
+        });
+        let config: Config = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(config.database_max_connections, 32);
+        assert_eq!(config.bind_address(), "127.0.0.1:8081");
+
+        for capacity in [1, 5, 16, 32, 64] {
+            input["database_max_connections"] = capacity.into();
+            let config: Config = serde_json::from_value(input.clone()).unwrap();
+            assert_eq!(config.database_max_connections, capacity);
+        }
     }
 }

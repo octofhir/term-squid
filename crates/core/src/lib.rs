@@ -1,6 +1,12 @@
 //! Storage-independent terminology primitives and bounded, immutable compose evaluation.
+mod concepts;
+pub use concepts::{PreparedConcepts, ProjectedConcept};
 mod translation;
 pub use translation::{PreparedConceptMap, TranslationMatch};
+mod hierarchy;
+pub use hierarchy::{
+    HierarchyConcept, HierarchyMatch, PreparedHierarchy, MAX_HIERARCHY_RELATIONSHIPS,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

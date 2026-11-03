@@ -160,6 +160,10 @@ impl PackageDownloader {
             .context("Package version not found")?
             .to_string();
 
+        if name == "hl7.fhir.r4.core" && version == "4.0.1" {
+            normalize_legacy_r4_tables(&mut resources);
+        }
+
         Ok(FhirPackage {
             name,
             version,
@@ -168,4 +172,184 @@ impl PackageDownloader {
     }
 }
 
+// This immutable published package has six v2 tables with pipe-versioned URLs and
+// table numbers in the version element. Keep the workaround at the package boundary:
+// ordinary resources and operation parameters must still reject version conflicts.
+fn legacy_r4_table(url: &str) -> Option<(&str, &str, &str)> {
+    let (base, version) = url.split_once('|')?;
+    let table = base.strip_prefix("http://terminology.hl7.org/CodeSystem/v2-")?;
+    match (table, version) {
+        ("0006", "2.1" | "2.4") | ("0360", "2.3.1" | "2.7") | ("0391", "2.4" | "2.6") => {
+            Some((base, version, table))
+        }
+        _ => None,
+    }
+}
+
+fn normalize_legacy_r4_tables(resources: &mut [FhirResource]) {
+    let mut changed = 0;
+    for resource in resources {
+        match resource.resource_type.as_str() {
+            "CodeSystem" => {
+                let Some((base, version, table)) =
+                    resource.url.as_deref().and_then(legacy_r4_table)
+                else {
+                    continue;
+                };
+                if resource.content["version"].as_str() != Some(table) {
+                    continue;
+                }
+                let (base, version) = (base.to_owned(), version.to_owned());
+                resource.content["url"] = base.clone().into();
+                resource.content["version"] = version.into();
+                resource.url = Some(base);
+                changed += 1;
+            }
+            "ValueSet" => {
+                for mode in ["include", "exclude"] {
+                    let Some(selections) = resource
+                        .content
+                        .get_mut("compose")
+                        .and_then(|compose| compose.get_mut(mode))
+                        .and_then(Value::as_array_mut)
+                    else {
+                        continue;
+                    };
+                    for selection in selections {
+                        let Some((base, version, _)) =
+                            selection["system"].as_str().and_then(legacy_r4_table)
+                        else {
+                            continue;
+                        };
+                        if selection.get("version").is_some_and(|v| !v.is_null()) {
+                            continue;
+                        }
+                        let (base, version) = (base.to_owned(), version.to_owned());
+                        selection["system"] = base.into();
+                        selection["version"] = version.into();
+                        changed += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if changed > 0 {
+        info!(
+            "Normalized {changed} legacy v2 table definitions/references in hl7.fhir.r4.core#4.0.1"
+        );
+    }
+}
+
 use std::io::Write;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::{write::GzEncoder, Compression};
+    use serde_json::json;
+
+    fn extract(name: &str, version: &str, resources: Vec<Value>) -> FhirPackage {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.benchmarks/package-tests");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{}.tgz", uuid::Uuid::new_v4()));
+        let mut archive = tar::Builder::new(GzEncoder::new(
+            File::create(&path).unwrap(),
+            Compression::default(),
+        ));
+        for (index, value) in std::iter::once(json!({"name":name,"version":version}))
+            .chain(resources)
+            .enumerate()
+        {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            let filename = if index == 0 {
+                "package/package.json".to_owned()
+            } else {
+                format!("package/resource-{index}.json")
+            };
+            archive
+                .append_data(&mut header, filename, bytes.as_slice())
+                .unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap();
+        // Extraction is local; do not consult macOS proxy settings in this fixture.
+        let downloader = PackageDownloader {
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            registry_url: "http://unused.invalid".into(),
+        };
+        let result = downloader.extract_package(&path);
+        std::fs::remove_file(path).unwrap();
+        result.unwrap()
+    }
+
+    #[test]
+    fn r4_core_legacy_table_versions_are_normalized_at_extraction() {
+        for (table, versions) in [
+            ("0006", ["2.1", "2.4"]),
+            ("0360", ["2.3.1", "2.7"]),
+            ("0391", ["2.4", "2.6"]),
+        ] {
+            let base = format!("http://terminology.hl7.org/CodeSystem/v2-{table}");
+            for version in versions {
+                let legacy = format!("{base}|{version}");
+                let package = extract(
+                    "hl7.fhir.r4.core",
+                    "4.0.1",
+                    vec![
+                        json!({"resourceType":"CodeSystem","url":legacy,"version":table,"content":"complete","concept":[{"code":"x"}]}),
+                        json!({"resourceType":"ValueSet","url":"urn:set","version":"1","compose":{
+                        "include":[{"system":legacy}],"exclude":[{"system":legacy,"concept":[{"code":"x"}]}]}}),
+                    ],
+                );
+                let system = &package.resources[0];
+                assert_eq!(system.url.as_deref(), Some(base.as_str()));
+                assert_eq!(system.content["url"], base);
+                assert_eq!(system.content["version"], version);
+                let prepared = term_squid_core::PreparedSystem::prepare_for_import(
+                    serde_json::from_value(system.content.clone()).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(prepared.canonical.url, base);
+                assert_eq!(prepared.canonical.version.as_deref(), Some(version));
+                for mode in ["include", "exclude"] {
+                    let selection = &package.resources[1].content["compose"][mode][0];
+                    assert_eq!(selection["system"], base);
+                    assert_eq!(selection["version"], version);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_normalization_does_not_rewrite_other_packages_or_conflicts() {
+        let legacy = "http://terminology.hl7.org/CodeSystem/v2-0006|2.4";
+        let resource =
+            json!({"resourceType":"CodeSystem","url":legacy,"version":"0006","content":"complete"});
+        for (name, version) in [
+            ("org.example.local", "4.0.1"),
+            ("hl7.fhir.r4.core", "4.0.2"),
+        ] {
+            let package = extract(name, version, vec![resource.clone()]);
+            assert_eq!(package.resources[0].content, resource);
+            assert_eq!(package.resources[0].url.as_deref(), Some(legacy));
+        }
+        let resources = vec![
+            json!({"resourceType":"CodeSystem","url":legacy,"version":"conflict","content":"complete"}),
+            json!({"resourceType":"CodeSystem","url":"urn:local|1","version":"2","content":"complete"}),
+            json!({"resourceType":"ValueSet","url":"urn:set","compose":{"include":[{"system":legacy,"version":"conflict"}]}}),
+            json!({"resourceType":"CodeSystem","url":"urn:local","version":"1","content":"complete"}),
+            json!({"resourceType":"ValueSet","url":"urn:expansion-only","expansion":{"contains":[]}}),
+            json!({"resourceType":"CodeSystem","url":"http://terminology.hl7.org/CodeSystem/v2-0006|2.8","version":"0006","content":"complete"}),
+        ];
+        let package = extract("hl7.fhir.r4.core", "4.0.1", resources.clone());
+        for (actual, expected) in package.resources.iter().zip(resources) {
+            assert_eq!(actual.content, expected);
+        }
+        assert!(term_squid_core::Canonical::parse(legacy, Some("conflict")).is_err());
+    }
+}

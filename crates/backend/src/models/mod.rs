@@ -72,8 +72,6 @@ pub struct SearchParams {
 /// One bounded row for lookup/validation; deliberately excludes the resource JSON.
 #[derive(Debug, sqlx::FromRow)]
 pub struct ResolvedConcept {
-    pub id: Uuid,
-    pub hierarchy_meaning: Option<String>,
     pub name: Option<String>,
     pub version: Option<String>,
     pub content_mode: Option<String>,
@@ -81,6 +79,16 @@ pub struct ResolvedConcept {
     pub display: Option<String>,
     pub definition: Option<String>,
     pub properties: Option<Json<serde_json::Value>>,
+}
+
+/// System metadata, normalized codes and hierarchy resolved in one database snapshot.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ResolvedSubsumption {
+    pub hierarchy_meaning: Option<String>,
+    pub code_a: Option<String>,
+    pub code_b: Option<String>,
+    /// Some(true): A subsumes B; Some(false): B subsumes A; None: no strict relationship.
+    pub relationship: Option<bool>,
 }
 
 /// Resource and members resolved from the same database snapshot.

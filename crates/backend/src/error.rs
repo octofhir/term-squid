@@ -13,6 +13,12 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("Database generation read failed: {0}")]
+    Generation(#[source] std::sync::Arc<sqlx::Error>),
+
+    #[error("Generation observation queue is full")]
+    Overloaded,
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 
@@ -30,6 +36,11 @@ impl IntoResponse for AppError {
                 tracing::error!("Database error: {:?}", e);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Database error")
             }
+            AppError::Generation(ref e) => {
+                tracing::error!("Database generation error: {:?}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+            }
+            AppError::Overloaded => (StatusCode::SERVICE_UNAVAILABLE, "Service overloaded"),
             AppError::Internal(ref e) => {
                 tracing::error!("Internal error: {:?}", e);
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")

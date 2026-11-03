@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::{
-    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, SearchParams, ValueSet,
+    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, ResolvedSubsumption,
+    SearchParams, ValueSet,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -97,13 +98,21 @@ pub trait TerminologyStore: Send + Sync {
     ) -> Result<Option<Concept>, AppError>;
 
     // Subsumption operations (for $subsumes)
-    /// Returns Some(true) if code_a subsumes code_b, Some(false) if code_b subsumes code_a, None if no relationship
-    async fn check_subsumption(
+    /// Resolve the selected system, both codes and their relationship atomically.
+    /// A missing system returns None; missing codes retain the selected system metadata.
+    async fn resolve_subsumption(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code_a: &str,
+        code_b: &str,
+    ) -> Result<Option<ResolvedSubsumption>, AppError>;
+    async fn resolve_subsumption_by_id(
         &self,
         code_system_id: &uuid::Uuid,
         code_a: &str,
         code_b: &str,
-    ) -> Result<Option<bool>, AppError>;
+    ) -> Result<Option<ResolvedSubsumption>, AppError>;
 
     // ValueSet expansion operations (for $expand)
     async fn get_value_set_expansion(

@@ -103,6 +103,11 @@ All generated files stay under ignored `.benchmarks/`:
 
 `--server-revision SHA` records the target's source revision, which cannot be inferred from its package version. The manifest separately records the runner repository revision and whether it has uncommitted changes. The synthetic fingerprint describes the generated fixtures, not the server's entire database; use `--dataset-label` to record any additional loaded packages even for local runs. A run ID is unique by default; explicit existing `--run-id` destinations are refused to preserve results.
 
+Local manifests also record `localHarness.files` and `localHarness.sha256`: the SHA-256 of
+JSON-encoded file-name/source tuples for `bench.ts`, `local/cases.js` and `local/load.js`,
+in that order. This distinguishes dirty runners at the same commit and separates workload
+changes from fixture changes. Use the same harness fingerprint for matched local comparisons.
+
 Warmup results are discarded from the reported measurements. Missing or invalid scenarios receive no speed score. Compare matching tests, datasets, content versions, response sizes, concurrency, hardware and resource limits. The optional `observe.py` wrapper samples server CPU/RSS. The k6 runner does not yet offer open-arrival-rate tests or reproduce the upstream composite score. These additions belong to the performance milestone, before publishing comparative claims.
 
 Run `just bench-test` to check the benchmark's semantic assertions and target selection. For commands and options: `bun benchmarks/bench.ts help`.
@@ -143,7 +148,7 @@ CPU time is cumulative, RSS is in KiB, and timestamps allow correlation with the
 The monitor uses `ps`; profile tools and process visibility depend on the local OS permissions.
 
 For a controlled database-pool experiment, keep the dataset, server build and request matrix
-fixed and vary `DATABASE_MAX_CONNECTIONS` (default 5, valid range 1–64):
+fixed and vary `DATABASE_MAX_CONNECTIONS` (default 32, valid range 1–64):
 
 ```sh
 DATABASE_MAX_CONNECTIONS=32 just bench-server
@@ -151,7 +156,7 @@ DATABASE_MAX_CONNECTIONS=32 just bench-server
 
 A larger cap permits more database sessions; it does not replace prepared terminology data.
 Record the cap and CPU/RSS with each result. Cold compose preparation has separate single-flight admission; warm checks use the
-configured database pool. The default remains five to preserve the original baseline configuration.
+configured database pool. The measured default is now 32; explicitly set `DATABASE_MAX_CONNECTIONS=5` to reproduce historical five-connection runs. Never compare an old five-connection result with a new default-32 run without labeling the capacity change.
 
 ## Prepared ValueSet increment
 
@@ -184,3 +189,91 @@ The translation workload now has 20% changing missing codes and original positiv
 in both directions; compare both binaries with this same harness. `PROFILE_OPERATION=translation`
 selects the separate allocation probe. The ConceptMap cache has its own eight-entry/16 MiB
 conservative charge; the existing ValueSet budget is unchanged.
+
+## Subsumption workload
+
+TS-SS01 now checks all four outcomes in preflight and load: `subsumes`, `subsumed-by`,
+`equivalent` and `not-subsumed`. Each four consecutive requests have one of each outcome;
+each outcome rotates across all 10,000 children. Sibling pairs wrap from the last child to
+the first, remaining distinct. Responses must have exactly one `outcome` with the expected
+`valueCode`; an OperationOutcome or duplicate output cannot pass as a fast result.
+
+The original root/child preflight and synthetic package version/fingerprint are unchanged.
+The request mix is different from the historical positive-only TS-SS01 workload. Re-run the
+previous server, the atomic-read server and the pinned local FHIRsmith with this same harness
+before comparing performance; do not substitute historical throughput. The new four-outcome
+preflight passes on the pinned local reference. A failing scenario receives no score.
+
+`bun test benchmarks` exercises the sampler, response checks and source fingerprint without
+PostgreSQL or k6. The benchmark-harness CI job runs these tests with Bun 1.4.2; it does not
+apply load or establish server conformance.
+
+The [subsumption comparison](../docs/SUBSUMPTION_PERFORMANCE_REPORT.md) preserves the first
+atomic query and the selected exact-case index-bound fix, with fresh local FHIRsmith runs.
+The [pool-capacity follow-up](../docs/SUBSUMPTION_POOL_REPORT.md) changes only capacity five
+versus 32; those historical runs predate the [new default selection](../docs/POOL_DEFAULT_REPORT.md). Both reports use the same four-outcome harness and
+keep diagnostic profiles separate from timed results. The pinned R4 core package requires
+the CLI's narrow [legacy v2 compatibility adapter](../docs/R4_CORE_COMPATIBILITY.md);
+normal operation version-conflict checks remain strict.
+
+
+## Prepared hierarchy increment
+
+Apply migration **`20261103000000_hierarchy_generation`** before starting the new server.
+It tracks concept/closure projection writes and adds the `hierarchies_tracked` guard;
+startup does not apply migrations. Keep these triggers enabled and commit related resource,
+concept and closure changes in one transaction. A fresh generation check runs on every
+warm request; no TTL or stale SQL-error fallback is permitted.
+
+Hierarchy retention has its own eight-entry / 16 MiB conservative budget. Input admission
+allows at most 100,000 concepts, 1,000,000 stored relationships and 32 MiB of projected
+strings. Over-limit plans retain a generation-scoped SQL admission marker and execute the
+existing atomic SQL instead of publishing an incomplete index. Transient preparation,
+in-flight readers, database work and queues are outside the retained-byte limit.
+
+See [the hierarchy report](../docs/HIERARCHY_REPORT.md) for matched four-outcome baseline,
+prepared and pinned local FHIRsmith results. Both term-squid binaries use explicit pool 32;
+this is an engine comparison, not another capacity experiment. The report also separates
+an additional 10,001-concept folded fixture from the unchanged synthetic dataset and records
+its own content/workload hashes. Never combine its results with the original fixture fingerprint.
+
+
+## Fresh generation batching
+
+The latest [generation observer](../docs/GENERATION_BATCHING_REPORT.md) shares one SQL
+observation among requests detached before its statement starts. Later arrivals use a
+later query, never a completed or already-dispatched observation. There is no generation
+TTL; post-commit freshness, PostgreSQL hierarchy key normalization and cold repeatable-read
+snapshots remain. Apply all existing migrations; this increment adds none.
+
+Each store allows at most 256 pending observations plus one active batch of at most 256.
+A full live queue returns HTTP 503 OperationOutcome, and cancelled queued requests release
+admission. This bounds only prepared-observation work, not all HTTP requests or expensive SQL.
+Database/guard failures return errors instead of warmed plans. SQLx health/recovery remains.
+
+For matched runs keep explicit pool 32 and the same harness. Measure TS-VC01, TS-EX01,
+TS-SS01 and TS-CM01 at 50 VU, add 1/10 VU for subsumption, and retain the reverse-order
+50-VU repeat. Use 5-second warmup and 30-second windows. The dataset label must include
+any additional folded fixture loaded on both servers, not just the original synthetic hash.
+Reference reverse translation and folded hierarchy remain semantic failures, not speed scores.
+
+
+## Prepared CodeSystem reads
+
+The [concept-read increment](../docs/CONCEPT_READS_REPORT.md) adds a projection index shared
+by lookup and CodeSystem validation. Warm reads join only post-admission generation batches;
+cold metadata/payloads come from one repeatable-read snapshot. Complete/fragment errors,
+business versions, instance selection, PostgreSQL case keys and existing result fields remain.
+No migration or dependency is added; migration `20261103000000` and its concept triggers/
+`hierarchies_tracked` guard are still required.
+
+The concept cache has eight entries / 32 MiB, bringing all four retained-cache budgets to
+128 MiB. Preparation admits at most 100,000 concepts / 32 MiB raw input, with 64 KiB per
+property document and admitted metadata. Decoded object graphs are charged incrementally.
+Over-limit systems retain SQL admission markers and use the original atomic lookup SQL,
+not an incomplete index. These limits do not bound HTTP response clones, cold queues or RSS.
+
+Compare unchanged TS-CS01 and TS-LK01 at explicit pool 32, 1/10/50 VU, 5-second warmup and
+30-second windows; repeat loaded lookup in reverse server order. Keep all seven local gates,
+fixture/harness fingerprints and extra-content labels. See the report for CPU/RSS, low-rate
+losses, fallback limitations and the pinned local reference protocol.

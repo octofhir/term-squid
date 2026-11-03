@@ -50,6 +50,15 @@ export function validMeasurement(result: any) {
     result.error_rate === 0 && Number.isFinite(result.throughput) && result.throughput > 0 &&
     ['p50', 'p95', 'p99', 'avg'].every((key) => Number.isFinite(result.duration?.[key]) && result.duration[key] >= 0);
 }
+export function sourceFingerprint(sources: ReadonlyArray<readonly [string, string]>) {
+  return createHash('sha256').update(JSON.stringify(sources)).digest('hex');
+}
+async function localHarness() {
+  const files = ['benchmarks/bench.ts', 'benchmarks/local/cases.js', 'benchmarks/local/load.js'];
+  const sources = await Promise.all(files.map(async (file) =>
+    [file, await readFile(join(ROOT, file), 'utf8')] as const));
+  return {files, sha256: sourceFingerprint(sources)};
+}
 function identifier(value: string, label: string) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$/.test(value)) throw new Error(`Invalid ${label}. Use letters, numbers, '.', '_' and '-'.`);
   return value;
@@ -137,6 +146,7 @@ async function run(options: Record<string, any>) {
     client: {bun: Bun.version, k6: k6Version, platform: platform(), arch: arch(), cpu: cpus()[0]?.model},
     runnerCommit: await required(['git', 'rev-parse', 'HEAD']),
     runnerDirty: !!(await required(['git', 'status', '--porcelain'])),
+    localHarness: suite === 'local' ? await localHarness() : null,
     serverSoftware: metadata.body.software, fhirVersion: metadata.body.fhirVersion,
     serverRevision: options['server-revision'] || null,
     dataset: fixtureData || options['dataset-label'] || 'External dataset: record exact terminology and package versions before comparing runs.',

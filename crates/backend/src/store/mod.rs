@@ -1,3 +1,6 @@
+mod concepts;
+mod generation;
+mod hierarchy;
 mod postgres;
 mod traits;
 

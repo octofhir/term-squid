@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::{
-    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, SearchParams, ValueSet,
+    CodeSystem, Concept, ConceptMap, ExpandedValueSet, ResolvedConcept, ResolvedSubsumption,
+    SearchParams, ValueSet,
 };
 use crate::store::TerminologyStore;
 use async_trait::async_trait;
@@ -10,6 +11,9 @@ use uuid::Uuid;
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
+    hierarchies: super::hierarchy::HierarchyPlans,
+    concepts: super::concepts::ConceptPlans,
+    generations: super::generation::GenerationReads,
     prepared: std::sync::Arc<tokio::sync::Mutex<PlanCache>>,
     preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
     maps: tokio::sync::Mutex<MapCache>,
@@ -79,7 +83,10 @@ impl MapCache {
 impl PostgresStore {
     pub fn new(pool: PgPool) -> Self {
         Self {
+            generations: super::generation::GenerationReads::new(pool.clone()),
             pool,
+            hierarchies: super::hierarchy::HierarchyPlans::default(),
+            concepts: super::concepts::ConceptPlans::default(),
             prepared: std::sync::Arc::new(tokio::sync::Mutex::new(PlanCache::default())),
             preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             maps: tokio::sync::Mutex::new(MapCache::default()),
@@ -89,6 +96,72 @@ impl PostgresStore {
     #[cfg(test)]
     pub(crate) async fn pause_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.preparation.clone().lock_owned().await
+    }
+    #[cfg(test)]
+    pub(crate) async fn pause_hierarchy_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.hierarchies.pause().await
+    }
+    #[cfg(test)]
+    pub(crate) async fn hierarchy_cache_usage(&self) -> (usize, usize) {
+        self.hierarchies.usage().await
+    }
+    #[cfg(test)]
+    pub(crate) async fn pause_generation(
+        &self,
+        delivery: bool,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.generations.pause(delivery).await
+    }
+    #[cfg(test)]
+    pub(crate) fn generation_stats(&self) -> (usize, usize, usize) {
+        self.generations.stats()
+    }
+    #[cfg(test)]
+    pub(crate) async fn pause_concept_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.concepts.pause().await
+    }
+    #[cfg(test)]
+    pub(crate) async fn concept_cache_usage(&self) -> (usize, usize) {
+        self.concepts.usage().await
+    }
+    async fn prepared_concept(
+        &self,
+        root: term_squid_core::Canonical,
+        id: Option<Uuid>,
+        code: &str,
+    ) -> Result<Option<ResolvedConcept>, AppError> {
+        match self
+            .concepts
+            .resolve(&self.pool, &self.generations, &root, id, code)
+            .await?
+        {
+            super::concepts::Read::Missing => Ok(None),
+            super::concepts::Read::Resolved(row) => Ok(Some(row)),
+            super::concepts::Read::Sql => {
+                self.resolve_row(&root.url, root.version.as_deref(), code, id)
+                    .await
+            }
+        }
+    }
+    async fn prepared_subsumption(
+        &self,
+        root: term_squid_core::Canonical,
+        id: Option<Uuid>,
+        a: &str,
+        b: &str,
+    ) -> Result<Option<ResolvedSubsumption>, AppError> {
+        match self
+            .hierarchies
+            .resolve(&self.pool, &self.generations, &root, id, a, b)
+            .await?
+        {
+            super::hierarchy::Read::Missing => Ok(None),
+            super::hierarchy::Read::Resolved(row) => Ok(Some(row)),
+            super::hierarchy::Read::Sql => {
+                self.subsumption_row(&root.url, root.version.as_deref(), a, b, id)
+                    .await
+            }
+        }
     }
     async fn cached_plan(&self, generation: i64, key: &PlanKey) -> Option<ExpandedValueSet> {
         let mut cache = self.prepared.lock().await;
@@ -118,11 +191,10 @@ impl PostgresStore {
     ) -> Result<std::sync::Arc<term_squid_core::PreparedConceptMap>, AppError> {
         let root = term_squid_core::Canonical::parse(url, version)?;
         let key = (root.clone(), id);
-        let observed: i64 = sqlx::query_scalar(
-            "SELECT generation FROM terminology_generation WHERE singleton AND maps_tracked",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let observed = self
+            .generations
+            .current(super::generation::Family::Map)
+            .await?;
         if let Some(plan) = self.cached_map(observed, &key).await {
             return Ok(plan);
         }
@@ -185,8 +257,8 @@ impl PostgresStore {
     ) -> Result<Option<ResolvedConcept>, AppError> {
         // A missing concept still returns system metadata, distinguishing unknown content.
         Ok(sqlx::query_as::<_, ResolvedConcept>(r#"
-            SELECT s.id, s.hierarchy_meaning, s.name, s.version, s.content_mode, c.code, c.display, c.definition, c.properties
-            FROM (SELECT id, hierarchy_meaning, name, version, content_mode, case_sensitive FROM code_systems
+            SELECT s.name, s.version, s.content_mode, c.code, c.display, c.definition, c.properties
+            FROM (SELECT id, name, version, content_mode, case_sensitive FROM code_systems
                   WHERE ($4::uuid IS NOT NULL AND id = $4) OR ($4::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
                   ORDER BY updated_at DESC, id LIMIT 1) s
             LEFT JOIN LATERAL (
@@ -198,6 +270,63 @@ impl PostgresStore {
             ) c ON true
         "#).bind(url).bind(version).bind(code).bind(id)
             .fetch_optional(&self.pool).await?)
+    }
+    async fn subsumption_row(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code_a: &str,
+        code_b: &str,
+        id: Option<Uuid>,
+    ) -> Result<Option<ResolvedSubsumption>, AppError> {
+        // One statement is the operation's snapshot boundary, including CLI commits.
+        // Read only indexed projections: no full resource or concept JSON is decoded.
+        // Separate case-policy branches keep exact code equality in index bounds;
+        // a mixed OR can make even case-sensitive lookup scan the whole system.
+        Ok(sqlx::query_as::<_, ResolvedSubsumption>(
+            r#"
+            SELECT s.hierarchy_meaning, a.code AS code_a, b.code AS code_b,
+                   CASE WHEN s.hierarchy_meaning = 'is-a' AND a.code <> b.code THEN
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM closure_table
+                           WHERE code_system_id = s.id
+                             AND ancestor_code = a.code AND descendant_code = b.code
+                       ) THEN true
+                       WHEN EXISTS (
+                           SELECT 1 FROM closure_table
+                           WHERE code_system_id = s.id
+                             AND ancestor_code = b.code AND descendant_code = a.code
+                       ) THEN false END
+                   END AS relationship
+            FROM (SELECT id, hierarchy_meaning, case_sensitive FROM code_systems
+                  WHERE ($5::uuid IS NOT NULL AND id = $5) OR
+                        ($5::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
+                  ORDER BY updated_at DESC, id LIMIT 1) s
+            LEFT JOIN LATERAL (
+                SELECT code FROM concepts
+                WHERE s.case_sensitive AND code_system_id = s.id AND code = $3
+                UNION ALL
+                SELECT code FROM concepts
+                WHERE NOT s.case_sensitive AND code_system_id = s.id AND lower(code) = lower($3)
+                LIMIT 1
+            ) a ON true
+            LEFT JOIN LATERAL (
+                SELECT code FROM concepts
+                WHERE s.case_sensitive AND code_system_id = s.id AND code = $4
+                UNION ALL
+                SELECT code FROM concepts
+                WHERE NOT s.case_sensitive AND code_system_id = s.id AND lower(code) = lower($4)
+                LIMIT 1
+            ) b ON true
+        "#,
+        )
+        .bind(url)
+        .bind(version)
+        .bind(code_a)
+        .bind(code_b)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
     async fn compose_snapshot(
         &self,
@@ -216,10 +345,10 @@ impl PostgresStore {
         );
         // A fresh autocommit statement is the warm operation's snapshot boundary.
         // No time-based generation cache: a request starting after a CLI commit sees it.
-        let observed: i64 =
-            sqlx::query_scalar("SELECT generation FROM terminology_generation WHERE singleton")
-                .fetch_one(&self.pool)
-                .await?;
+        let observed = self
+            .generations
+            .current(super::generation::Family::ValueSet)
+            .await?;
         if let Some(result) = self.cached_plan(observed, &cache_key).await {
             return Ok(result);
         }
@@ -364,15 +493,19 @@ impl TerminologyStore for PostgresStore {
         code: &str,
     ) -> Result<Option<ResolvedConcept>, AppError> {
         let canonical = term_squid_core::Canonical::parse(url, version)?;
-        self.resolve_row(&canonical.url, canonical.version.as_deref(), code, None)
-            .await
+        self.prepared_concept(canonical, None, code).await
     }
     async fn resolve_concept_by_id(
         &self,
         id: &Uuid,
         code: &str,
     ) -> Result<Option<ResolvedConcept>, AppError> {
-        self.resolve_row("", None, code, Some(*id)).await
+        self.prepared_concept(
+            term_squid_core::Canonical::parse("urn:term-squid:instance", None)?,
+            Some(*id),
+            code,
+        )
+        .await
     }
 
     async fn expand_compose(
@@ -465,7 +598,7 @@ impl TerminologyStore for PostgresStore {
     async fn update_code_system(&self, cs: CodeSystem) -> Result<CodeSystem, AppError> {
         let result = sqlx::query_as::<_, CodeSystem>(
             r#"
-            UPDATE code_systems 
+            UPDATE code_systems
             SET status = $1, name = $2, title = $3, content = $4, updated_at = NOW()
             WHERE id = $5
             RETURNING *
@@ -621,7 +754,7 @@ impl TerminologyStore for PostgresStore {
     async fn update_value_set(&self, vs: ValueSet) -> Result<ValueSet, AppError> {
         let result = sqlx::query_as::<_, ValueSet>(
             r#"
-            UPDATE value_sets 
+            UPDATE value_sets
             SET status = $1, name = $2, title = $3, content = $4, updated_at = NOW()
             WHERE id = $5
             RETURNING *
@@ -774,7 +907,7 @@ impl TerminologyStore for PostgresStore {
     async fn update_concept_map(&self, cm: ConceptMap) -> Result<ConceptMap, AppError> {
         let result = sqlx::query_as::<_, ConceptMap>(
             r#"
-            UPDATE concept_maps 
+            UPDATE concept_maps
             SET status = $1, name = $2, title = $3, source_uri = $4, target_uri = $5, content = $6, updated_at = NOW()
             WHERE id = $7
             RETURNING *
@@ -901,44 +1034,31 @@ impl TerminologyStore for PostgresStore {
         Ok(concept)
     }
 
-    async fn check_subsumption(
+    async fn resolve_subsumption(
+        &self,
+        url: &str,
+        version: Option<&str>,
+        code_a: &str,
+        code_b: &str,
+    ) -> Result<Option<ResolvedSubsumption>, AppError> {
+        let canonical = term_squid_core::Canonical::parse(url, version)?;
+        self.prepared_subsumption(canonical, None, code_a, code_b)
+            .await
+    }
+
+    async fn resolve_subsumption_by_id(
         &self,
         code_system_id: &uuid::Uuid,
         code_a: &str,
         code_b: &str,
-    ) -> Result<Option<bool>, AppError> {
-        // Check if code_a subsumes code_b (A is ancestor of B)
-        let subsumes: Option<(bool,)> = sqlx::query_as(
-            "SELECT TRUE FROM closure_table
-             WHERE code_system_id = $1 AND ancestor_code = $2 AND descendant_code = $3",
+    ) -> Result<Option<ResolvedSubsumption>, AppError> {
+        self.prepared_subsumption(
+            term_squid_core::Canonical::parse("urn:term-squid:instance", None)?,
+            Some(*code_system_id),
+            code_a,
+            code_b,
         )
-        .bind(code_system_id)
-        .bind(code_a)
-        .bind(code_b)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if subsumes.is_some() {
-            return Ok(Some(true));
-        }
-
-        // Check if code_b subsumes code_a (B is ancestor of A)
-        let subsumed_by: Option<(bool,)> = sqlx::query_as(
-            "SELECT TRUE FROM closure_table
-             WHERE code_system_id = $1 AND ancestor_code = $2 AND descendant_code = $3",
-        )
-        .bind(code_system_id)
-        .bind(code_b)
-        .bind(code_a)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if subsumed_by.is_some() {
-            return Ok(Some(false));
-        }
-
-        // No relationship
-        Ok(None)
+        .await
     }
 
     async fn get_value_set_expansion(

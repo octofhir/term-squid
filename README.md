@@ -353,7 +353,7 @@ just docker-run
 ### Environment Variables
 
 - `DATABASE_URL` - PostgreSQL connection string (default: `postgresql://termserver:dev_password@localhost:5433/termserver`)
-- `DATABASE_MAX_CONNECTIONS` - SQLx pool capacity, 1–64 (default: `5`); benchmark capacity changes separately from semantic changes
+- `DATABASE_MAX_CONNECTIONS` - SQLx pool capacity per backend process, 1–64 (default: `32`). Explicit settings remain supported; budget all replicas, CLI imports and administrative sessions against the database connection limit.
 - `SERVER_HOST` - Server host (default: `127.0.0.1`)
 - `SERVER_PORT` - Server port (default: `8081`)
 - `RUST_LOG` - Log level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`)

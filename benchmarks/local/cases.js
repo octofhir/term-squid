@@ -26,6 +26,13 @@ const translate = (n, reverse) => query('/ConceptMap/$translate', {
   targetsystem: reverse ? SYSTEM : TARGET, reverse: String(reverse),
 });
 const probe = (request, valid, expectation, status = 200) => ({request, valid, expectation, status});
+const subsumption = (a, b, outcome, expectation) => probe(query('/CodeSystem/$subsumes', {
+  system: SYSTEM, version: VERSION, codeA: a, codeB: b,
+}), (body) => {
+  if (body?.resourceType !== 'Parameters' || !Array.isArray(body.parameter)) return false;
+  const outcomes = body.parameter.filter((p) => p?.name === 'outcome');
+  return outcomes.length === 1 && outcomes[0].valueCode === outcome;
+}, expectation);
 const expansion = (body, offset, length) => {
   const entries = body?.expansion?.contains;
   return body?.resourceType === 'ValueSet' && body.expansion.total === 255 &&
@@ -85,12 +92,22 @@ export const CASES = [
     }), (b) => expansion(b, offset, offset === 250 ? 5 : 50), 'paginated expansion'); },
   },
   {
-    id: 'TS-SS01', name: 'Hierarchy subsumption',
-    probes: [probe(query('/CodeSystem/$subsumes', {system: SYSTEM, version: VERSION, codeA: 'root', codeB: code(7)}),
-      (b) => parameter(b, 'outcome')?.valueCode === 'subsumes', 'root subsumes child')],
-    sample(i) { return probe(query('/CodeSystem/$subsumes', {
-      system: SYSTEM, version: VERSION, codeA: 'root', codeB: code(i % CONCEPT_COUNT),
-    }), (b) => parameter(b, 'outcome')?.valueCode === 'subsumes', 'root subsumes child'); },
+    id: 'TS-SS01', name: 'Hierarchy subsumption, all four outcomes',
+    probes: [subsumption('root', code(7), 'subsumes', 'root subsumes child'),
+      subsumption(code(7), 'root', 'subsumed-by', 'child is subsumed by root'),
+      subsumption(code(7), code(7), 'equivalent', 'an existing code is equivalent to itself'),
+      subsumption(code(7), code(8), 'not-subsumed', 'distinct siblings do not subsume each other')],
+    sample(i) {
+      // Each four requests cover all outcomes; each outcome rotates over every child.
+      const n = Math.floor(i / 4) % CONCEPT_COUNT;
+      switch (i % 4) {
+        case 0: return subsumption('root', code(n), 'subsumes', 'root subsumes child');
+        case 1: return subsumption(code(n), 'root', 'subsumed-by', 'child is subsumed by root');
+        case 2: return subsumption(code(n), code(n), 'equivalent', 'an existing code is equivalent to itself');
+        default: return subsumption(code(n), code((n + 1) % CONCEPT_COUNT), 'not-subsumed',
+          'distinct siblings do not subsume each other');
+      }
+    },
   },
   ...[false, true].map((reverse) => ({
     id: reverse ? 'TS-CM02' : 'TS-CM01', name: reverse ? 'Reverse translation' : 'Forward translation',

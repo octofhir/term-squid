@@ -72,9 +72,25 @@ jobs:
         run: cargo build --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose -- --include-ignored
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/termsquid_test
+          TERM_SQUID_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/termsquid_test
+
+  benchmark-harness:
+    name: Benchmark correctness gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+
+      - name: Test benchmark harness
+        run: bun test benchmarks
 
   frontend:
     name: Frontend Build
