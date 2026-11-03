@@ -2925,11 +2925,10 @@ async fn native_snomed_projection_knowledge_versions_and_fresh_hierarchy() {
         inline_parameters(resource, vec![]),
     )
     .await;
-    assert_eq!(status, 422, "{body}");
-    assert!(body["issue"][0]["diagnostics"]
-        .as_str()
-        .unwrap()
-        .contains("Native SNOMED compose"));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["expansion"]["total"], 5);
+    assert_eq!(body["expansion"]["contains"][0]["code"], "1");
+    assert_eq!(body["expansion"]["contains"][0]["version"], "fixture-one");
     sqlx::query("DELETE FROM code_systems WHERE id=$1")
         .bind(id)
         .execute(&pool)
@@ -2988,3 +2987,15 @@ async fn native_snomed_ancestor_limit_never_returns_a_partial_answer() {
         .unwrap();
     admin.close().await;
 }
+
+#[path = "native_valueset_tests.rs"]
+mod native_valueset_tests;
+
+#[path = "implicit_membership_tests.rs"]
+mod implicit_membership_tests;
+
+#[path = "loinc_provider_tests.rs"]
+mod loinc_provider_tests;
+
+#[path = "lookup_property_tests.rs"]
+mod lookup_property_tests;

@@ -316,3 +316,31 @@ Canonical UCUM lookup/CodeSystem validation now use the ready `octofhir-ucum` 0.
 ## Native RF2 and another-device continuation
 
 The CLI now provides `migrate` and checksummed native `import-snomed --manifest FILE [--dry-run]`. Apply migration `20261103000001_snomed_rf2` before starting the new backend. See [RF2 input/storage/read limits](../docs/SNOMED_RF2_REPORT.md) and [the clean-machine handoff](../docs/NEXT_SESSION.md). Clinical files are not committed. Native lookup/validation/subsumption do not imply native ValueSet/implicit/filter/ECL support or an improved composite.
+
+## Native SNOMED ValueSet diagnostics
+
+Apply all migrations, including `20261103000002_snomed_children_index`, before starting the updated backend. Native RF2 dependencies use a separate SQL page/membership path; they must never be treated as empty finite JSON systems. See [provider semantics, validation and measurements](../docs/SNOMED_VALUESET_REPORT.md).
+
+The generated 100,005-concept probe lives in a separate local schema, not the Round 0 corpus. Its definition, load driver, SQL plans, binary hashes and timing/resource samples are retained under `.benchmarks/native-valueset-20261103/` on the measured device only. It does not replace complete clinical imports or the unchanged scorer/protocol. The main corpus still passes 7/7 local gates and 2/20 upstream gates. Do not merge generated native projection data into a clinical attestation.
+
+The subsequent [implicit membership report](../docs/IMPLICIT_MEMBERSHIP_REPORT.md) compares changing whole-system / hierarchy membership at 1/10/50 VU and records separate System-allocator profiling. Those raw artifacts and archived sources live under `.benchmarks/implicit-membership-20261103/`. `before` is invalid because of build overlap; the admitted baseline is `before-clean`. The corpus is generated and does not contribute to a clinical composite.
+
+## Native LOINC primary table
+
+Apply migration `20261103000003_loinc_csv`. The CLI now streams locally obtained `Loinc.csv` through checksummed staging and atomic activation. See [the provider report](../docs/LOINC_PROVIDER_REPORT.md) for source scope, properties, validation, limits and measurements.
+
+Copy [the manifest template](loinc-csv.template.json) next to the extracted source under `.benchmarks/`, fill in the actual business version, lowercase SHA-256 and exact data-row count, and attest `completeTable=true` only for the complete main table. The template intentionally fails unchanged. A content hash/count is provenance, not automatic proof of authentic clinical completeness.
+
+```sh
+CARGO_TARGET_DIR=.benchmarks/target cargo run --locked --release --bin term-squid-cli -- \
+  --database-url 'postgresql://benchmark:benchmark@127.0.0.1:15433/term_squid_benchmark' \
+  migrate
+CARGO_TARGET_DIR=.benchmarks/target cargo run --locked --release --bin term-squid-cli -- \
+  --database-url 'postgresql://benchmark:benchmark@127.0.0.1:15433/term_squid_benchmark' \
+  import-loinc --manifest .benchmarks/clinical/loinc-2.82/manifest.json --dry-run
+# Repeat the same command without --dry-run to activate the validated release.
+```
+
+The main table supports numeric primary-term lookup/validation and numeric implicit membership. Parts, answers/lists, Groups and hierarchy are separate files/semantics. Broad `http://loinc.org/vs` expansion fails explicitly; use explicit numeric concepts or the custom `source-table=Loinc.csv` filter to enumerate only primary terms. Raw CSV axis strings use `raw-*` properties, not standard LP-coded axis meanings. Mixed native SNOMED/LOINC sets share one fresh snapshot; arbitrary finite/native mixing remains unsupported.
+
+The separate generated version `99.0` / 100,005-row schema and measurements under `.benchmarks/loinc-provider-20261103/` are diagnostic only. Never add it to the Round 0 clinical attestation or load only sampled pool codes to obtain a pass.

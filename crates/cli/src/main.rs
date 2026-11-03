@@ -1,4 +1,5 @@
 mod commands;
+mod loinc;
 mod package;
 mod snomed;
 mod terminology;
@@ -29,6 +30,13 @@ enum Commands {
     Migrate,
     /// Import a locally supplied complete SNOMED RF2 Snapshot using a checksummed manifest
     ImportSnomed {
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import a locally supplied complete Loinc.csv main table using a checksummed manifest
+    ImportLoinc {
         #[arg(long)]
         manifest: std::path::PathBuf,
         #[arg(long)]
@@ -126,6 +134,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::ImportSnomed { manifest, dry_run } => {
             let result = snomed::import_manifest(&pool, &manifest, dry_run).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::ImportLoinc { manifest, dry_run } => {
+            let result = loinc::import_manifest(&pool, &manifest, dry_run).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::Import {

@@ -98,6 +98,14 @@ pub trait TerminologyStore: Send + Sync {
         system_version: Option<&str>,
     ) -> Result<ExpandedValueSet, AppError>;
 
+    async fn query_value_set(
+        &self,
+        request: super::ValueSetRequest<'_>,
+        operation: super::ValueSetOperation<'_>,
+    ) -> Result<super::ValueSetResult, AppError> {
+        super::value_set::finite(self, request, operation).await
+    }
+
     // Concept operations (for $lookup and $validate-code)
     async fn get_concept(
         &self,

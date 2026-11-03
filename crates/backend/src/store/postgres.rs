@@ -11,6 +11,8 @@ use uuid::Uuid;
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
+    native_reads: tokio::sync::Semaphore,
+    value_set_requests: tokio::sync::Semaphore,
     hierarchies: super::hierarchy::HierarchyPlans,
     concepts: super::concepts::ConceptPlans,
     generations: super::generation::GenerationReads,
@@ -86,6 +88,8 @@ impl PostgresStore {
         Self {
             generations: super::generation::GenerationReads::new(pool.clone()),
             pool,
+            native_reads: tokio::sync::Semaphore::new(4),
+            value_set_requests: tokio::sync::Semaphore::new(64),
             hierarchies: super::hierarchy::HierarchyPlans::default(),
             concepts: super::concepts::ConceptPlans::default(),
             prepared: std::sync::Arc::new(tokio::sync::Mutex::new(PlanCache::default())),
@@ -93,6 +97,14 @@ impl PostgresStore {
             maps: tokio::sync::Mutex::new(MapCache::default()),
             map_preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn native_available_permits(&self) -> usize {
+        self.native_reads.available_permits()
+    }
+    #[cfg(test)]
+    pub(crate) async fn pause_value_set_requests(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.value_set_requests.acquire_many(64).await.unwrap()
     }
     #[cfg(test)]
     pub(crate) async fn pause_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
@@ -146,6 +158,9 @@ impl PostgresStore {
         if let Some(row) = &result {
             if row.native_provider.as_deref() == Some("snomed-rf2") {
                 term_squid_core::snomed::reject_expression(code)?;
+            }
+            if row.native_provider.as_deref() == Some("loinc-csv") {
+                term_squid_core::loinc::require_primary_code(code)?;
             }
         }
         Ok(result)
@@ -349,6 +364,11 @@ impl PostgresStore {
                     "Compose resource limit exceeded".into(),
                 ));
             }
+            if term_squid_core::snomed::implicit(&key)?.is_some()
+                || term_squid_core::loinc::implicit(&key)?.is_some()
+            {
+                return Err(AppError::NativeValueSet);
+            }
             let resource = if key == root && inline.is_some() {
                 let inline = inline.take().expect("Inline root is present");
                 bytes_remaining -= inline.bytes as i64;
@@ -376,7 +396,7 @@ impl PostgresStore {
                     AppError::BadRequest("ValueSet without compose is not supported".into())
                 })?)
                 .map_err(|e| AppError::BadRequest(format!("Invalid compose: {e}")))?;
-            let (systems, imports) = compose.dependencies()?;
+            let (systems, imports) = compose.references()?;
             pending.extend(imports);
             for system in systems {
                 if raw_systems.contains_key(&system) {
@@ -397,9 +417,7 @@ impl PostgresStore {
                     ))
                 })?;
                 if row.2.is_some() {
-                    return Err(AppError::Terminology(term_squid_core::Error(
-                        "Native SNOMED compose requires a provider; finite JSON preparation is unsupported".into(),
-                    )));
+                    return Err(AppError::NativeValueSet);
                 }
                 bytes_remaining -= row.1;
                 let resource = row
@@ -457,6 +475,52 @@ impl PostgresStore {
 
 #[async_trait]
 impl TerminologyStore for PostgresStore {
+    async fn query_value_set(
+        &self,
+        request: super::ValueSetRequest<'_>,
+        operation: super::ValueSetOperation<'_>,
+    ) -> Result<super::ValueSetResult, AppError> {
+        // Bound callers before finite/native dispatch, including cold-probe waiters.
+        let _request = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        let implicit = if request.inline.is_none() && request.id.is_none() {
+            let canonical = term_squid_core::Canonical::parse(request.url, request.version)?;
+            term_squid_core::snomed::implicit_definition(&canonical)?.is_some()
+                || term_squid_core::loinc::implicit(&canonical)?.is_some()
+        } else {
+            false
+        };
+        if !implicit {
+            match super::value_set::finite(self, request, operation).await {
+                Err(AppError::NativeValueSet) => {}
+                result => return result,
+            }
+        }
+        // Cancellation releases admission and work permits without detached preparation.
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let _read = self
+                .native_reads
+                .acquire()
+                .await
+                .map_err(|_| AppError::Overloaded)?;
+            super::native_valueset::query(&self.pool, request, operation).await
+        })
+        .await
+        .map_err(|_| AppError::Overloaded)?
+        .map_err(|error| match error {
+            AppError::Database(ref database)
+                if database
+                    .as_database_error()
+                    .is_some_and(|e| e.code().as_deref() == Some("57014")) =>
+            {
+                AppError::Overloaded
+            }
+            other => other,
+        })
+    }
+
     async fn prepare_concept_map(
         &self,
         url: &str,

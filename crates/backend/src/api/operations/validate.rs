@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::api::parameters::{Parameter, Parameters};
 use crate::error::AppError;
-use crate::store::TerminologyStore;
+use crate::store::{TerminologyStore, ValueSetOperation, ValueSetRequest, ValueSetResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ValidateCodeParams {
@@ -53,6 +53,7 @@ pub async fn validate_code_cs_post(
 ) -> Result<Json<Parameters>, AppError> {
     let system = params
         .get_string("system")
+        .or_else(|| params.get_uri("system"))
         .or_else(|| params.get_string("url"))
         .or_else(|| params.get_uri("url"))
         .ok_or_else(|| AppError::BadRequest("system or url parameter required".to_string()))?;
@@ -165,14 +166,21 @@ pub async fn validate_code_vs_post(
 
     if let Some(resource) = inline {
         let system_version = params.get_string("systemVersion");
-        let expanded = store
-            .compose_inline(
-                resource,
-                params.get_string("valueSetVersion"),
-                system_version.map(|v| (system, v)),
-            )
-            .await?;
-        return validate_members(expanded.members, system_version, system, code, display);
+        return validate_value_set(
+            &*store,
+            ValueSetRequest {
+                url: value_set_url,
+                version: params.get_string("valueSetVersion"),
+                id: None,
+                inline: Some(resource),
+                system_context: system_version.map(|v| (system, v)),
+            },
+            system_version,
+            system,
+            code,
+            display,
+        )
+        .await;
     }
 
     perform_validate_code_valueset(
@@ -200,22 +208,24 @@ pub async fn validate_code_vs_instance_get(
         AppError::BadRequest("system parameter required for ValueSet validation".to_string())
     })?;
 
-    let expanded = store
-        .compose_for_validation(
-            "urn:term-squid:instance",
-            None,
-            Some(id),
-            &system,
-            params.system_version.as_deref(),
-        )
-        .await?;
-    validate_members(
-        expanded.members,
+    validate_value_set(
+        &*store,
+        ValueSetRequest {
+            url: "urn:term-squid:instance",
+            version: None,
+            id: Some(id),
+            inline: None,
+            system_context: params
+                .system_version
+                .as_deref()
+                .map(|v| (system.as_str(), v)),
+        },
         params.system_version.as_deref(),
         &system,
         &code,
         params.display.as_deref(),
     )
+    .await
 }
 
 /// POST /ValueSet/{id}/$validate-code with Parameters body
@@ -234,22 +244,22 @@ pub async fn validate_code_vs_instance_post(
     })?;
     let display = params.get_string("display");
 
-    let expanded = store
-        .compose_for_validation(
-            "urn:term-squid:instance",
-            None,
-            Some(id),
-            system,
-            params.get_string("systemVersion"),
-        )
-        .await?;
-    validate_members(
-        expanded.members,
-        params.get_string("systemVersion"),
+    let version = params.get_string("systemVersion");
+    validate_value_set(
+        &*store,
+        ValueSetRequest {
+            url: "urn:term-squid:instance",
+            version: None,
+            id: Some(id),
+            inline: None,
+            system_context: version.map(|v| (system, v)),
+        },
+        version,
         system,
         code,
         display,
     )
+    .await
 }
 
 async fn perform_validate_code(
@@ -317,26 +327,45 @@ async fn perform_validate_code_valueset(
     code: &str,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    let expanded = store
-        .compose_for_validation(
-            value_set_url,
-            value_set_version,
-            None,
-            system,
-            system_version,
-        )
-        .await?;
-    validate_members(expanded.members, system_version, system, code, display)
+    validate_value_set(
+        &*store,
+        ValueSetRequest {
+            url: value_set_url,
+            version: value_set_version,
+            id: None,
+            inline: None,
+            system_context: system_version.map(|v| (system, v)),
+        },
+        system_version,
+        system,
+        code,
+        display,
+    )
+    .await
 }
 
-fn validate_members(
-    members: std::sync::Arc<term_squid_core::PreparedValueSet>,
+async fn validate_value_set(
+    store: &dyn TerminologyStore,
+    request: ValueSetRequest<'_>,
     system_version: Option<&str>,
     system: &str,
     code: &str,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
-    let member = members.find(system, system_version, code);
+    let result = store
+        .query_value_set(
+            request,
+            ValueSetOperation::Find {
+                system,
+                version: system_version,
+                code,
+            },
+        )
+        .await?;
+    let member = match &result {
+        ValueSetResult::Native(page) => page.members.first(),
+        ValueSetResult::Finite(plan) => plan.members.find(system, system_version, code),
+    };
     let valid = member.is_some_and(|m| display.is_none_or(|d| m.display.as_deref() == Some(d)));
     let mut result = vec![Parameter::boolean("result", valid)];
     if let Some(m) = member {

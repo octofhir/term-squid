@@ -1,0 +1,10 @@
+{
+  "format": "loinc-csv-v1",
+  "version": "2.82",
+  "completeTable": false,
+  "expectedConcepts": 0,
+  "source": {
+    "path": "Loinc.csv",
+    "sha256": "REPLACE_WITH_LOWERCASE_SOURCE_FILE_SHA256"
+  }
+}

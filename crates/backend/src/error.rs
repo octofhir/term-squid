@@ -7,6 +7,10 @@ use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// Internal dispatch signal: never convert native content into a finite empty plan.
+    #[error("Native ValueSet requires projection evaluation")]
+    NativeValueSet,
+
     #[error("Unsupported terminology expression: {0}")]
     Terminology(#[from] term_squid_core::Error),
 
@@ -16,7 +20,7 @@ pub enum AppError {
     #[error("Database generation read failed: {0}")]
     Generation(#[source] std::sync::Arc<sqlx::Error>),
 
-    #[error("Generation observation queue is full")]
+    #[error("Terminology operation capacity or time budget exceeded")]
     Overloaded,
 
     #[error("Internal server error: {0}")]
@@ -46,7 +50,9 @@ impl IntoResponse for AppError {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "Resource not found"),
-            AppError::Terminology(_) => (StatusCode::UNPROCESSABLE_ENTITY, "not-supported"),
+            AppError::Terminology(_) | AppError::NativeValueSet => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "not-supported")
+            }
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, "Bad request"),
         };
 

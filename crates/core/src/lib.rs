@@ -1,5 +1,6 @@
 //! Storage-independent terminology primitives and bounded, immutable compose evaluation.
 mod concepts;
+pub mod loinc;
 pub mod snomed;
 pub mod ucum;
 pub use concepts::{PreparedConcepts, ProjectedConcept};
@@ -290,6 +291,24 @@ pub struct Compose {
 }
 impl Compose {
     pub fn dependencies(&self) -> Result<(Vec<Canonical>, Vec<Canonical>)> {
+        let dependencies = self.references()?;
+        for s in self.include.iter().chain(&self.exclude) {
+            for f in &s.filter {
+                if !matches!(
+                    (f.property.as_str(), f.op.as_str()),
+                    ("concept", "is-a" | "descendent-of" | "is-not-a") | (_, "=" | "exists")
+                ) {
+                    return Err(Error(format!("Unsupported filter {} {}", f.property, f.op)));
+                }
+                if f.op == "exists" && f.value != "true" && f.value != "false" {
+                    return Err(Error("exists expects true or false".into()));
+                }
+            }
+        }
+        Ok(dependencies)
+    }
+    /// Structural checks and references; providers validate their own filter language.
+    pub fn references(&self) -> Result<(Vec<Canonical>, Vec<Canonical>)> {
         if self.include.is_empty() {
             return Err(Error("compose.include must not be empty".into()));
         }
@@ -311,17 +330,6 @@ impl Compose {
             }
             if s.system.is_none() && s.value_set.is_empty() {
                 return Err(Error("Empty compose selection".into()));
-            }
-            for f in &s.filter {
-                if !matches!(
-                    (f.property.as_str(), f.op.as_str()),
-                    ("concept", "is-a" | "descendent-of" | "is-not-a") | (_, "=" | "exists")
-                ) {
-                    return Err(Error(format!("Unsupported filter {} {}", f.property, f.op)));
-                }
-                if f.op == "exists" && f.value != "true" && f.value != "false" {
-                    return Err(Error("exists expects true or false".into()));
-                }
             }
             if let Some(system) = &s.system {
                 systems.push(Canonical::parse(system, s.version.as_deref())?);

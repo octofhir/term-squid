@@ -25,6 +25,7 @@ indicatif.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+csv.workspace = true
 
 # Compression
 tar.workspace = true

@@ -53,3 +53,7 @@ The release CLI/server smoke uses original generated five-concept RF2 files in a
 The existing benchmark database must remain unchanged apart from the additive migration. Its complete clinical corpus has not been supplied. The original twenty-test clinical suite and composite remain unmeasured on complete data; no speedup, full-release performance or superiority over Termbox/HTS is claimed from these fixtures.
 
 Verified release binaries: backend SHA-256 `ea3af1ba49d9f76dd40712f91e74b288ae5dd501ea0069d533f465b1e5aa6d43`; CLI SHA-256 `c204cc08c68b85357e18bc867baa0a527afeb084d5db856dc0bb38dfc8f329ee`. The actual local migration preserved 1,065 CodeSystems, 1,317 ValueSets, 81 ConceptMaps and 40,861 concept projections; zero native clinical releases were added to that benchmark corpus. Its unchanged local gates pass 7/7 and upstream coverage remains 2/20.
+
+## Subsequent native ValueSet increment
+
+The original importer/read results above are preserved. The [native ValueSet report](SNOMED_VALUESET_REPORT.md) describes the later implicit/compose provider, bounded pages, fresh snapshots and generated performance diagnostics. ECL/refsets and mixed providers remain incomplete; the clinical composite remains unmeasured.

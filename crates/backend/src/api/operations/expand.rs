@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::api::parameters::Parameters;
 use crate::error::AppError;
-use crate::store::TerminologyStore;
+use crate::store::{TerminologyStore, ValueSetOperation, ValueSetRequest, ValueSetResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ExpandParams {
@@ -107,52 +107,64 @@ async fn perform_expand(
             "offset must be nonnegative and count must be between 0 and 10000".into(),
         ));
     }
-    let expanded = if let Some(id) = id {
-        store.expand_compose_by_id(&id).await?
-    } else if let Some(resource) = inline {
-        store
-            .compose_inline(resource, params.value_set_version.as_deref(), None)
-            .await?
-    } else {
-        store
-            .expand_compose(url, params.value_set_version.as_deref())
-            .await?
-    };
-    let filter = params.filter.as_ref().map(|s| s.to_lowercase());
-    let offset = params.offset.unwrap_or(0) as usize;
-    let count = params.count.unwrap_or(100) as usize;
-    let mut total = 0;
-    let mut paginated_entries = Vec::new();
-    for entry in expanded.members.values().filter(|entry| {
-        filter.as_ref().is_none_or(|f| {
-            entry.code.to_lowercase().contains(f)
-                || entry
-                    .display
-                    .as_ref()
-                    .is_some_and(|d| d.to_lowercase().contains(f))
-        })
-    }) {
-        if total >= offset && paginated_entries.len() < count {
-            paginated_entries.push(entry);
-        }
-        total += 1;
-    }
+    let offset = params.offset.unwrap_or(0);
+    let expanded = store
+        .query_value_set(
+            ValueSetRequest {
+                url,
+                version: params.value_set_version.as_deref(),
+                id,
+                inline,
+                system_context: None,
+            },
+            ValueSetOperation::Expand {
+                filter: params.filter.as_deref(),
+                offset,
+                count: params.count.unwrap_or(100),
+            },
+        )
+        .await?;
 
-    // Build ValueSet with expansion
-    let expansion = json!({
+    let (mut result, total, contains) = match expanded {
+        ValueSetResult::Native(page) => (
+            page.resource,
+            page.total,
+            serde_json::to_value(page.members),
+        ),
+        ValueSetResult::Finite(expanded) => {
+            let filter = params.filter.as_ref().map(|s| s.to_lowercase());
+            let count = params.count.unwrap_or(100) as usize;
+            let mut total = 0;
+            let mut entries = Vec::new();
+            for member in expanded.members.values().filter(|m| {
+                filter.as_ref().is_none_or(|f| {
+                    m.code.to_lowercase().contains(f)
+                        || m.display
+                            .as_ref()
+                            .is_some_and(|d| d.to_lowercase().contains(f))
+                })
+            }) {
+                if total >= offset && entries.len() < count {
+                    entries.push(member);
+                }
+                total += 1;
+            }
+            (
+                expanded.resource.as_ref().clone(),
+                total,
+                serde_json::to_value(entries),
+            )
+        }
+    };
+    let contains = contains.map_err(|e| AppError::Internal(e.into()))?;
+    let mut expansion = json!({
         "identifier": format!("urn:uuid:{}", Uuid::new_v4()),
         "timestamp": chrono::Utc::now().to_rfc3339(),
-        "total": total,
-        "offset": offset,
-        "parameter": [],
-        "contains": paginated_entries
+        "total":total,"offset":offset,"parameter":[]
     });
-
-    // Extract the base ValueSet content and add expansion
-    let mut result = expanded.resource.as_ref().clone();
+    expansion["contains"] = contains;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("expansion".to_string(), expansion);
     }
-
     Ok(Json(result))
 }
