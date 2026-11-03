@@ -2173,3 +2173,818 @@ async fn prepared_concept_large_folded_and_bounded_sql_fallback() {
         .unwrap();
     admin.close().await;
 }
+
+fn inline_parameters(resource: Value, extra: Vec<Value>) -> Value {
+    let mut parameters = vec![json!({"name":"valueSet","resource":resource})];
+    parameters.extend(extra);
+    json!({"resourceType":"Parameters","parameter":parameters})
+}
+
+#[tokio::test]
+async fn inline_valueset_rejects_invalid_selectors_without_database() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgresql://unused:unused@127.0.0.1/unused")
+        .unwrap();
+    let app = api::create_router(Arc::new(PostgresStore::new(pool)));
+    let resource =
+        json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:codes"}]}});
+    let base = inline_parameters(resource.clone(), vec![]);
+    let mut invalid = vec![
+        inline_parameters(json!({"resourceType":"CodeSystem"}), vec![]),
+        inline_parameters(json!({"resourceType":"ValueSet"}), vec![]),
+        inline_parameters(json!({"resourceType":"ValueSet","compose":[]}), vec![]),
+        inline_parameters(
+            resource.clone(),
+            vec![json!({"name":"url","valueUri":"urn:set"})],
+        ),
+        inline_parameters(
+            resource.clone(),
+            vec![json!({"name":"valueSet","resource":resource})],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","version":"1","compose":{}}),
+            vec![json!({"name":"valueSetVersion","valueString":"2"})],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","url":7,"compose":{}}),
+            vec![],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","url":"","compose":{}}),
+            vec![],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","version":null,"compose":{}}),
+            vec![],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","compose":{}}),
+            vec![json!({"name":"valueSetVersion","valueInteger":1})],
+        ),
+        inline_parameters(
+            json!({"resourceType":"ValueSet","description":"x".repeat(256*1024),"compose":{}}),
+            vec![],
+        ),
+        json!({"resourceType":"Parameters","parameter":[{"name":"valueSet","valueString":"not a resource"}]}),
+    ];
+    for parameter in [
+        json!({"name":"count","valueString":"1"}),
+        json!({"name":"filter","valueInteger":1}),
+        json!({"name":"systemVersion","valueInteger":1}),
+        json!({"name":"includeDesignations","valueBoolean":true}),
+        json!({"name":"coding","valueCoding":{"system":"urn:codes","code":"A"}}),
+    ] {
+        let mut input = base.clone();
+        input["parameter"].as_array_mut().unwrap().push(parameter);
+        invalid.push(input);
+    }
+    let mut mixed = base.clone();
+    mixed["parameter"][0]["valueString"] = "ambiguous".into();
+    invalid.push(mixed);
+    let mut double_value = base.clone();
+    double_value["parameter"][0]["valueString"] = "ambiguous".into();
+    double_value["parameter"][0]["valueBoolean"] = true.into();
+    invalid.push(double_value);
+    let mut unknown_value = base.clone();
+    unknown_value["parameter"][0]["valueDateTime"] = "2026-11-03".into();
+    invalid.push(unknown_value);
+    let mut parts = base.clone();
+    parts["parameter"][0]["part"] = json!([]);
+    invalid.push(parts);
+    let mut wrong_envelope = base.clone();
+    wrong_envelope["resourceType"] = "ValueSet".into();
+    invalid.push(wrong_envelope);
+    let mut duplicate = base.clone();
+    duplicate["parameter"].as_array_mut().unwrap().extend([
+        json!({"name":"valueSetVersion","valueString":"1"}),
+        json!({"name":"valueSetVersion","valueString":"1"}),
+    ]);
+    invalid.push(duplicate);
+    for body in invalid {
+        for operation in ["$expand", "$validate-code"] {
+            let mut body = body.clone();
+            if operation == "$validate-code" {
+                body["parameter"].as_array_mut().unwrap().extend([
+                    json!({"name":"system","valueUri":"urn:codes"}),
+                    json!({"name":"code","valueCode":"A"}),
+                ]);
+            }
+            let (status, outcome) =
+                request(&app, "POST", &format!("/r4/ValueSet/{operation}"), body).await;
+            assert_eq!(status, 400, "{operation}: {outcome}");
+            assert_eq!(outcome["resourceType"], "OperationOutcome");
+        }
+    }
+    for operation in ["$expand", "$validate-code"] {
+        let (status, _) = request(
+            &app,
+            "POST",
+            &format!("/r4/ValueSet/{}/{operation}", Uuid::new_v4()),
+            base.clone(),
+        )
+        .await;
+        assert_eq!(status, 400);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn inline_valueset_http_expansion_membership_and_versions() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    insert_system(&pool,json!({"url":"urn:codes","version":"1","content":"complete","caseSensitive":false,"hierarchyMeaning":"is-a","concept":[
+        {"code":"Root","display":"Root","concept":[{"code":"A","display":"Alpha","property":[{"code":"group","valueCode":"one"}]},{"code":"B","display":"Beta"},{"code":"C","display":"Gamma"}]}]})).await;
+    insert_system(&pool,json!({"url":"urn:codes","version":"2","content":"complete","concept":[{"code":"A","display":"Alpha 2"},{"code":"Other"}]})).await;
+    insert_set(&pool,Some("import"),json!({"include":[{"system":"urn:codes","version":"1","concept":[{"code":"A"},{"code":"B"}]}]})).await;
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    let app = api::create_router(store.clone());
+    let resource = json!({"resourceType":"ValueSet","compose":{
+        "include":[{"system":"urn:codes","version":"1","filter":[{"property":"concept","op":"is-a","value":"Root"}]}],
+        "exclude":[{"system":"urn:codes","version":"1","concept":[{"code":"B"}]}]}});
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$expand",
+        inline_parameters(
+            resource.clone(),
+            vec![
+                json!({"name":"offset","valueInteger":1}),
+                json!({"name":"count","valueInteger":1}),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.get("url").is_none());
+    assert_eq!(body["compose"], resource["compose"]);
+    assert_eq!(body["expansion"]["total"], 3);
+    assert_eq!(body["expansion"]["offset"], 1);
+    assert_eq!(body["expansion"]["contains"].as_array().unwrap().len(), 1);
+    assert_eq!(body["expansion"]["contains"][0]["code"], "C");
+    assert_eq!(body["expansion"]["contains"][0]["version"], "1");
+    for (code, version, display, valid) in [
+        ("a", "1", "Alpha", true),
+        ("B", "1", "Beta", false),
+        ("Other", "1", "Other", false),
+        ("A", "2", "Alpha 2", false),
+        ("A", "1", "wrong", false),
+    ] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/r4/ValueSet/$validate-code",
+            inline_parameters(
+                resource.clone(),
+                vec![
+                    json!({"name":"system","valueUri":"urn:codes"}),
+                    json!({"name":"code","valueCode":code}),
+                    json!({"name":"systemVersion","valueString":version}),
+                    json!({"name":"display","valueString":display}),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], valid);
+    }
+    let filtered = json!({"resourceType":"ValueSet","url":"urn:ad-hoc","version":"one","compose":{"include":[{"system":"urn:codes","version":"1","filter":[{"property":"group","op":"=","value":"one"}]}]}});
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$expand",
+        inline_parameters(
+            filtered,
+            vec![
+                json!({"name":"valueSetVersion","valueString":"one"}),
+                json!({"name":"filter","valueString":"ALP"}),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["url"], "urn:ad-hoc");
+    assert_eq!(body["expansion"]["total"], 1);
+    assert_eq!(body["expansion"]["contains"][0]["code"], "A");
+    let imported = json!({"resourceType":"ValueSet","compose":{"include":[{"valueSet":["urn:set|import"],"system":"urn:codes","version":"1"}],"exclude":[{"system":"urn:codes","version":"1","concept":[{"code":"B"}]}]}});
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$expand",
+        inline_parameters(imported, vec![]),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["expansion"]["total"], 1);
+    assert_eq!(body["expansion"]["contains"][0]["code"], "A");
+    // The systemVersion context changes both the plan key and unversioned dependency selection.
+    let context = json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:codes"}]}});
+    for (version, code, valid) in [
+        ("1", "Root", true),
+        ("2", "Other", true),
+        ("2", "Root", false),
+    ] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/r4/ValueSet/$validate-code",
+            inline_parameters(
+                context.clone(),
+                vec![
+                    json!({"name":"system","valueUri":"urn:codes"}),
+                    json!({"name":"code","valueCode":code}),
+                    json!({"name":"systemVersion","valueString":version}),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], valid);
+    }
+    assert_eq!(
+        store.count_value_sets().await.unwrap(),
+        1,
+        "Inline requests must not persist resources"
+    );
+    for (count, offset) in [(0, 0), (1, 100), (10001, 0), (1, -1)] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/r4/ValueSet/$expand",
+            inline_parameters(
+                resource.clone(),
+                vec![
+                    json!({"name":"count","valueInteger":count}),
+                    json!({"name":"offset","valueInteger":offset}),
+                ],
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            if count > 10000 || offset < 0 {
+                400
+            } else {
+                200
+            },
+            "{body}"
+        );
+        if status == 200 {
+            assert_eq!(body["expansion"]["contains"].as_array().unwrap().len(), 0);
+            assert_eq!(body["expansion"]["total"], 3);
+        }
+    }
+    drop(app);
+    drop(store);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn inline_valueset_cache_identity_freshness_and_eviction() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let system = insert_system(&pool,json!({"url":"urn:codes","version":"1","content":"complete","concept":[{"code":"A","display":"Alpha"},{"code":"B","display":"Beta"}]})).await;
+    let set = insert_set(
+        &pool,
+        Some("1"),
+        json!({"include":[{"system":"urn:codes","concept":[{"code":"A"}]}]}),
+    )
+    .await;
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    let named = json!({"resourceType":"ValueSet","url":"urn:set","version":"1","name":"Request-local","compose":{"include":[{"system":"urn:codes","concept":[{"code":"B"}]}]}});
+    let stored = store.expand_compose("urn:set", Some("1")).await.unwrap();
+    let first = store.compose_inline(&named, None, None).await.unwrap();
+    assert!(stored.members.find("urn:codes", None, "A").is_some());
+    assert!(first.members.find("urn:codes", None, "A").is_none());
+    assert!(first.members.find("urn:codes", None, "B").is_some());
+    let repeated = store.compose_inline(&named, Some("1"), None).await.unwrap();
+    assert!(Arc::ptr_eq(&first.members, &repeated.members));
+    let mut changed = named.clone();
+    changed["compose"]["include"][0]["concept"] = json!([{"code":"A"}]);
+    let other = store.compose_inline(&changed, None, None).await.unwrap();
+    assert!(!Arc::ptr_eq(&first.members, &other.members));
+    assert!(other.members.find("urn:codes", None, "A").is_some());
+    assert_eq!(
+        store
+            .expand_compose("urn:set", Some("1"))
+            .await
+            .unwrap()
+            .resource["id"],
+        set.to_string()
+    );
+    let anonymous =
+        json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:codes"}]}});
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let store = store.clone();
+        let input = anonymous.clone();
+        workers.push(tokio::spawn(async move {
+            store.compose_inline(&input, None, None).await.unwrap()
+        }));
+    }
+    let shared = workers.remove(0).await.unwrap();
+    for worker in workers {
+        assert!(Arc::ptr_eq(&shared.members, &worker.await.unwrap().members));
+    }
+    // A separate database connection commits a dependency update.
+    let mut writer = admin.begin().await.unwrap();
+    sqlx::query(&format!("SET LOCAL search_path TO {schema}, public"))
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE code_systems SET content=jsonb_set(content,'{concept,0,display}','\"Changed\"') WHERE id=$1").bind(system).execute(&mut *writer).await.unwrap();
+    writer.commit().await.unwrap();
+    let fresh = store.compose_inline(&anonymous, None, None).await.unwrap();
+    assert_eq!(
+        fresh
+            .members
+            .find("urn:codes", None, "A")
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("Changed")
+    );
+    assert_eq!(
+        shared
+            .members
+            .find("urn:codes", None, "A")
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("Alpha")
+    );
+    let mut writer = admin.begin().await.unwrap();
+    sqlx::query(&format!("SET LOCAL search_path TO {schema}, public"))
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE code_systems SET content=jsonb_set(content,'{concept,0,display}','\"Rolled back\"') WHERE id=$1").bind(system).execute(&mut *writer).await.unwrap();
+    writer.rollback().await.unwrap();
+    assert!(Arc::ptr_eq(
+        &fresh.members,
+        &store
+            .compose_inline(&anonymous, None, None)
+            .await
+            .unwrap()
+            .members
+    ));
+    let imported =
+        json!({"resourceType":"ValueSet","compose":{"include":[{"valueSet":["urn:set|1"]}]}});
+    let old_import = store.compose_inline(&imported, None, None).await.unwrap();
+    sqlx::query("UPDATE value_sets SET content=jsonb_set(content,'{compose}', '{\"include\":[{\"system\":\"urn:codes\",\"concept\":[{\"code\":\"B\"}]}]}') WHERE id=$1").bind(set).execute(&pool).await.unwrap();
+    let new_import = store.compose_inline(&imported, None, None).await.unwrap();
+    assert!(old_import.members.find("urn:codes", None, "A").is_some());
+    assert!(new_import.members.find("urn:codes", None, "A").is_none());
+    assert!(new_import.members.find("urn:codes", None, "B").is_some());
+    for i in 0..12 {
+        let mut input = named.clone();
+        input["name"] = format!("Request-local-{i}").into();
+        let plan = store.compose_inline(&input, None, None).await.unwrap();
+        assert_eq!(plan.resource["name"], format!("Request-local-{i}"));
+    }
+    let retained = store.compose_inline(&named, None, None).await.unwrap();
+    for i in 20..32 {
+        let mut input = named.clone();
+        input["name"] = i.to_string().into();
+        store.compose_inline(&input, None, None).await.unwrap();
+    }
+    assert!(!Arc::ptr_eq(
+        &retained.members,
+        &store
+            .compose_inline(&named, None, None)
+            .await
+            .unwrap()
+            .members
+    ));
+    assert_eq!(store.count_value_sets().await.unwrap(), 1);
+    sqlx::query("TRUNCATE value_sets CASCADE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.compose_inline(&imported, None, None).await,
+        Err(error::AppError::NotFound(_))
+    ));
+    let before_failure = store.compose_inline(&anonymous, None, None).await.unwrap();
+    assert_eq!(before_failure.members.values().count(), 2);
+    sqlx::query(
+        "ALTER TABLE terminology_generation RENAME COLUMN generation TO unavailable_generation",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        store.compose_inline(&anonymous, None, None).await.is_err(),
+        "Database failure must not return a stale inline plan"
+    );
+    drop(store);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn inline_valueset_limits_cycles_and_unsupported_content() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    insert_system(
+        &pool,
+        json!({"url":"urn:codes","content":"complete","concept":[{"code":"A"}]}),
+    )
+    .await;
+    sqlx::query("INSERT INTO code_systems(url,status,content) VALUES ('urn:stub','active','{\"resourceType\":\"CodeSystem\",\"url\":\"urn:stub\",\"content\":\"not-present\"}')").execute(&pool).await.unwrap();
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    let app = api::create_router(store.clone());
+    for (resource, expected) in [
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:missing"}]}}),
+            404,
+        ),
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":[{"valueSet":["urn:missing"]}]}}),
+            404,
+        ),
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:stub"}]}}),
+            422,
+        ),
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":[]}}),
+            422,
+        ),
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":"invalid"}}),
+            400,
+        ),
+        (
+            json!({"resourceType":"ValueSet","url":"urn:self","compose":{"include":[{"valueSet":["urn:self"]}]}}),
+            422,
+        ),
+        (
+            json!({"resourceType":"ValueSet","url":"urn:self","version":"1","compose":{"include":[{"valueSet":["urn:self|1"]}]}}),
+            422,
+        ),
+        (
+            json!({"resourceType":"ValueSet","compose":{"include":[{"system":"urn:codes","filter":[{"property":"concept","op":"generalizes","value":"A"}]}]}}),
+            422,
+        ),
+    ] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/r4/ValueSet/$expand",
+            inline_parameters(resource, vec![]),
+        )
+        .await;
+        assert_eq!(status, expected, "{body}");
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+    let mut boundary = json!({"resourceType":"ValueSet","description":"","compose":{"include":[{"system":"urn:codes"}]}});
+    let overhead = serde_json::to_vec(&boundary).unwrap().len();
+    boundary["description"] = "x".repeat(256 * 1024 - overhead).into();
+    assert_eq!(serde_json::to_vec(&boundary).unwrap().len(), 256 * 1024);
+    assert_eq!(
+        store
+            .compose_inline(&boundary, None, None)
+            .await
+            .unwrap()
+            .members
+            .values()
+            .count(),
+        1
+    );
+    boundary["description"] = format!("{}x", boundary["description"].as_str().unwrap()).into();
+    assert!(matches!(
+        store.compose_inline(&boundary, None, None).await,
+        Err(error::AppError::BadRequest(_))
+    ));
+    sqlx::query("INSERT INTO value_sets(url,status,content) SELECT 'urn:dependency:'||n,'active',jsonb_build_object('resourceType','ValueSet','compose',jsonb_build_object('include',jsonb_build_array(jsonb_build_object('system','urn:codes')))) FROM generate_series(1,128) n").execute(&pool).await.unwrap();
+    let many = json!({"resourceType":"ValueSet","compose":{"include":[{"valueSet":(1..=128).map(|i|format!("urn:dependency:{i}")).collect::<Vec<_>>()}]}});
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$expand",
+        inline_parameters(many, vec![]),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("resource limit"));
+    drop(app);
+    drop(store);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+async fn builtin_ucum_canonical_http_uses_library_without_database() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgresql://unused:unused@127.0.0.1/unused")
+        .unwrap();
+    let app = api::create_router(Arc::new(PostgresStore::new(pool)));
+    for (code, encoded) in [
+        ("mg", "mg"),
+        ("mg/dL", "mg%2FdL"),
+        ("mm[Hg]", "mm%5BHg%5D"),
+        ("Cel", "Cel"),
+    ] {
+        let (status,body)=request(&app,"GET",&format!("/r4/CodeSystem/$lookup?system=http://unitsofmeasure.org&version=2.2&code={encoded}"),Value::Null).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "version")["valueString"], "2.2");
+        assert_eq!(parameter(&body, "name")["valueString"], "UCUM");
+        assert!(!parameter(&body, "display")["valueString"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+        let input = json!({"resourceType":"Parameters","parameter":[{"name":"system","valueUri":"http://unitsofmeasure.org"},{"name":"code","valueCode":code}]});
+        let (status, post) = request(&app, "POST", "/r4/CodeSystem/$lookup", input.clone()).await;
+        assert_eq!(status, 200, "{post}");
+        assert_eq!(parameter(&post, "display"), parameter(&body, "display"));
+        let (status, valid) = request(&app, "POST", "/r4/CodeSystem/$validate-code", input).await;
+        assert_eq!(status, 200, "{valid}");
+        assert_eq!(parameter(&valid, "result")["valueBoolean"], true);
+    }
+    for (code, valid) in [("mg", true), ("PAL", false), ("not-a-unit", false)] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!(
+                "/r4/CodeSystem/$validate-code?system=http://unitsofmeasure.org%7C2.2&code={code}"
+            ),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], valid);
+    }
+    for (display, valid) in [("milligram", true), ("wrong", false)] {
+        let (status,body)=request(&app,"GET",&format!("/r4/CodeSystem/$validate-code?system=http://unitsofmeasure.org&code=mg&display={display}"),Value::Null).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], valid);
+    }
+    for (operation, code, version, expected) in [("$lookup", "not-a-unit", "2.2", 404)] {
+        let (status,body)=request(&app,"GET",&format!("/r4/CodeSystem/{operation}?system=http://unitsofmeasure.org&code={code}&version={version}"),Value::Null).await;
+        assert_eq!(status, expected, "{body}");
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/r4/CodeSystem/$validate-code?system=http://unitsofmeasure.org%7C2.2&version=2.1&code=mg",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    let (status, body) = request(&app, "GET", "/r4/TerminologyCapabilities", Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["codeSystem"][0]["uri"], "http://unitsofmeasure.org");
+    assert_eq!(body["codeSystem"][0]["version"][0]["code"], "2.2");
+    assert_eq!(body["codeSystem"][0]["version"][0]["compositional"], true);
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn builtin_ucum_preserves_explicit_stored_versions_and_instances() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let id=insert_system(&pool,json!({"url":"http://unitsofmeasure.org","version":"test-release","content":"complete","concept":[{"code":"fixture-code","display":"Stored release context"}]})).await;
+    let app = api::create_router(Arc::new(PostgresStore::new(pool.clone())));
+    for path in ["/r4/CodeSystem/$lookup?system=http://unitsofmeasure.org&version=test-release&code=fixture-code".to_string(), format!("/r4/CodeSystem/{id}/$lookup?code=fixture-code")] {
+        let(status,body)=request(&app,"GET",&path,Value::Null).await;
+        assert_eq!(status,200,"{body}");assert_eq!(parameter(&body,"display")["valueString"],"Stored release context");assert_eq!(parameter(&body,"version")["valueString"],"test-release");
+    }
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/r4/CodeSystem/$validate-code?system=http://unitsofmeasure.org&code=fixture-code",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(parameter(&body, "result")["valueBoolean"], false);
+    assert_eq!(parameter(&body, "version")["valueString"], "2.2");
+    for operation in ["$lookup", "$validate-code"] {
+        let(status,body)=request(&app,"GET",&format!("/r4/CodeSystem/{operation}?system=http://unitsofmeasure.org&version=missing-release&code=mg"),Value::Null).await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["resourceType"], "OperationOutcome");
+    }
+    drop(app);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+async fn native_test_system(pool: &PgPool, version: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO code_systems(id,url,version,status,name,content,native_provider) VALUES($1,'http://snomed.info/sct',$2,'active','RF2 fixture',$3,'snomed-rf2')")
+        .bind(id).bind(version).bind(sqlx::types::Json(json!({"resourceType":"CodeSystem","url":"http://snomed.info/sct","version":version,"content":"not-present","caseSensitive":true,"hierarchyMeaning":"is-a"}))).execute(pool).await.unwrap();
+    id
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn native_snomed_projection_knowledge_versions_and_fresh_hierarchy() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let id = native_test_system(&pool, "fixture-one").await;
+    let other = native_test_system(&pool, "fixture-two").await;
+    for system in [id, other] {
+        sqlx::query("INSERT INTO concepts(code_system_id,code,display,properties) SELECT $1,n::text,'Fixture '||n,'[]'::jsonb FROM generate_series(1,5)n").bind(system).execute(&pool).await.unwrap();
+    }
+    sqlx::query("INSERT INTO snomed_relationships(code_system_id,id,effective_time,active,module_id,source_code,destination_code,relationship_group,type_id,characteristic_type_id,modifier_id) VALUES ($1,'11','2026-02-01',true,'1','2','1',0,'116680003','900000000000011006','900000000000451002'),($1,'12','2026-02-01',true,'1','3','2',0,'116680003','900000000000011006','900000000000451002'),($1,'13','2026-02-01',false,'1','4','1',0,'116680003','900000000000011006','900000000000451002'),($1,'14','2026-02-01',true,'1','4','1',0,'999','900000000000011006','900000000000451002')").bind(id).execute(&pool).await.unwrap();
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    let app = api::create_router(store.clone());
+    for (a, b, expected) in [
+        ("1", "3", "subsumes"),
+        ("3", "1", "subsumed-by"),
+        ("2", "2", "equivalent"),
+        ("1", "4", "not-subsumed"),
+    ] {
+        for context in [
+            "$subsumes?system=http://snomed.info/sct&version=fixture-one".to_string(),
+            format!("{id}/$subsumes?"),
+        ] {
+            let (status, body) = request(
+                &app,
+                "GET",
+                &format!("/r4/CodeSystem/{context}&codeA={a}&codeB={b}"),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(parameter(&body, "outcome")["valueCode"], expected);
+        }
+    }
+    let(status,body)=request(&app,"GET","/r4/CodeSystem/$subsumes?system=http://snomed.info/sct&version=fixture-two&codeA=1&codeB=3",Value::Null).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(parameter(&body, "outcome")["valueCode"], "not-subsumed");
+    for (code, expected) in [("1", true), ("missing", false)] {
+        let(status,body)=request(&app,"GET",&format!("/r4/CodeSystem/$validate-code?system=http://snomed.info/sct&version=fixture-one&code={code}"),Value::Null).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], expected);
+    }
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("/r4/CodeSystem/{id}/$lookup?code=1"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(parameter(&body, "display")["valueString"], "Fixture 1");
+    for operation in ["$lookup", "$validate-code"] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("/r4/CodeSystem/{id}/{operation}?code=100001%3A100002%3D100003"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            status, 422,
+            "Unsupported expressions must not become invalid code answers: {body}"
+        );
+    }
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("/r4/CodeSystem/{id}/$subsumes?codeA=100001%2B100002&codeB=100003"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    insert_system(
+        &pool,
+        json!({"url":"urn:literal-code","content":"complete","concept":[{"code":"A:B"}]}),
+    )
+    .await;
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/r4/CodeSystem/$validate-code?system=urn:literal-code&code=A%3AB",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+    // A warm SQL-admission marker must not hide committed native edge changes.
+    sqlx::query(
+        "UPDATE snomed_relationships SET destination_code='4' WHERE code_system_id=$1 AND id='12'",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store
+        .resolve_subsumption_by_id(&id, "1", "3")
+        .await
+        .unwrap()
+        .unwrap()
+        .relationship
+        .is_none());
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE snomed_relationships SET destination_code='2' WHERE code_system_id=$1 AND id='12'",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(store
+        .resolve_subsumption_by_id(&id, "1", "3")
+        .await
+        .unwrap()
+        .unwrap()
+        .relationship
+        .is_none());
+    let missing = store
+        .resolve_subsumption_by_id(&id, "1", "absent")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(missing.code_b.is_none());
+    let resource = json!({"resourceType":"ValueSet","compose":{"include":[{"system":"http://snomed.info/sct","version":"fixture-one"}]}});
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$expand",
+        inline_parameters(resource, vec![]),
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("Native SNOMED compose"));
+    sqlx::query("DELETE FROM code_systems WHERE id=$1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store
+        .resolve_subsumption_by_id(&id, "1", "3")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM snomed_relationships WHERE code_system_id=$1"
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+    drop(app);
+    drop(store);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn native_snomed_ancestor_limit_never_returns_a_partial_answer() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let id = native_test_system(&pool, "fixture-limit").await;
+    sqlx::query("INSERT INTO concepts(code_system_id,code) SELECT $1,n::text FROM generate_series(1,10000)n").bind(id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO snomed_relationships(code_system_id,id,effective_time,active,module_id,source_code,destination_code,relationship_group,type_id,characteristic_type_id,modifier_id) SELECT $1,n::text,'2026-02-01',true,'1','10000',n::text,0,'116680003','900000000000011006','900000000000451002' FROM generate_series(1,9000)n").bind(id).execute(&pool).await.unwrap();
+    let app = api::create_router(Arc::new(PostgresStore::new(pool.clone())));
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("/r4/CodeSystem/{id}/$subsumes?codeA=1&codeB=10000"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("8192"));
+    drop(app);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}

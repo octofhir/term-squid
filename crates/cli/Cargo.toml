@@ -41,3 +41,4 @@ anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
+sha2 = "0.10"

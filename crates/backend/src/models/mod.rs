@@ -72,6 +72,7 @@ pub struct SearchParams {
 /// One bounded row for lookup/validation; deliberately excludes the resource JSON.
 #[derive(Debug, sqlx::FromRow)]
 pub struct ResolvedConcept {
+    pub native_provider: Option<String>,
     pub name: Option<String>,
     pub version: Option<String>,
     pub content_mode: Option<String>,

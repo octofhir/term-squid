@@ -7,10 +7,12 @@ The benchmark has two suites:
 
 Neither suite replaces the HL7 Terminology Ecosystem conformance tests. A passing preflight applies to that scenario's assertions, not to the entire FHIR specification. The upstream suite is particularly oriented towards SNOMED, with LOINC and RxNorm scenarios; UCUM and more HL7/LOINC validation cases are planned separately.
 
+The primary performance KPI is first place by the unchanged upstream composite, including direct local Termbox/FHIRsmith comparisons. See [the Round 0 baseline](../docs/HEALTHSAMURAI_BASELINE.md) for verified published scores, current 2/20 preflight coverage, missing clinical ingestion and comparison limits. Synthetic peaks are not clinical composite scores.
+
 ## Prerequisites
 
 - Rust and Cargo, Bun, [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), `just`, Git, and `tar`.
-- For the isolated database: Docker Compose and `sqlx-cli` with PostgreSQL support. Install the latter with `cargo install sqlx-cli --no-default-features --features postgres` if necessary.
+- For the isolated database: Docker Compose. `bench-migrate` uses the repository CLI; a separate `sqlx-cli` is optional for manual migration administration.
 - A release build of the server. The `bench-server` recipe sets this up; debug builds are unsuitable for performance comparisons.
 
 ## Run against term-squid
@@ -108,7 +110,34 @@ JSON-encoded file-name/source tuples for `bench.ts`, `local/cases.js` and `local
 in that order. This distinguishes dirty runners at the same commit and separates workload
 changes from fixture changes. Use the same harness fingerprint for matched local comparisons.
 
-Warmup results are discarded from the reported measurements. Missing or invalid scenarios receive no speed score. Compare matching tests, datasets, content versions, response sizes, concurrency, hardware and resource limits. The optional `observe.py` wrapper samples server CPU/RSS. The k6 runner does not yet offer open-arrival-rate tests or reproduce the upstream composite score. These additions belong to the performance milestone, before publishing comparative claims.
+Warmup results are discarded from the reported measurements. Missing or invalid scenarios receive no real speed reading. Compare matching tests, datasets, content versions, response sizes, concurrency, hardware and resource limits. The optional `observe.py` wrapper samples server CPU/RSS. Open-arrival-rate tests remain unimplemented. The original composite scorer is now available through the commands below; its weighted totals are not per-operation RPS.
+
+## Original composite and local graphs
+
+```sh
+just bench-reference             # verify archive hash and reproduce all five historical scores
+just bench-round0 --preflight-only # require all 20 checks, without load
+just bench-ui                    # original pinned site + separate local results page
+```
+
+Open **http://127.0.0.1:4100/tx-benchmark/local/**. The page separates the published composite from actual matched local synthetic charts and the upstream coverage audit. It never inserts synthetic timings into clinical test IDs. The generated site stays under `.benchmarks/ui-site`; pinned site dependencies install from its frozen lockfile without lifecycle scripts. Missing historical raw runs are reported as missing on a new machine. `just bench-ui-build` builds the static report separately in `.benchmarks/ui-build`, without replacing the active dev server’s caches.
+
+Upstream defaults match the pinned runner: 30-second windows at 1/10/50 VU, one five-second global warmup at 10 VU and five-second inter-test pauses. Local defaults remain unchanged. `protocol` and `upstreamHarness` record timing and source/pool/wrapper fingerprints; `timingMatchesRound0` verifies timing only, not data or hardware. Negative LK05 also requires a positive LK01 preflight so a missing whole SNOMED system cannot earn a fast negative lookup result.
+
+For a complete local cohort, first provision all participants with the exact corpus listed in `upstream.json`. Copy `round0-dataset.template.json` to `.benchmarks/round0-dataset.json`, record actual source SHA-256 values, and attest loading only after verification. The attestation does not inspect the database automatically. Record equivalent host, CPU/RAM limits, cache mode and server/database deployment in `--environment-label`; use the same exact metadata file for each participant.
+
+```sh
+# Repeat sequentially for termbox and fhirsmith, with their own loopback URLs and revisions.
+just bench-round0 --name term-squid --url http://127.0.0.1:18081/r4 \
+  --run-id round0-local --server-revision '<source revision>' \
+  --dataset-label 'full pinned Round 0 corpus' \
+  --dataset-manifest .benchmarks/round0-dataset.json \
+  --environment-label '<host, resource limits, cache mode and deployment>'
+just bench-score round0-local
+bun benchmarks/ui.ts prepare
+```
+
+`bench-score` requires complete valid upstream 20×3 matrices for distinct term-squid, Termbox and FHIRsmith participants, recorded revisions, matching corpus/environment/harness, complete preflights and zero load errors/check failures. It calls the original scorer and writes `.benchmarks/composites/<run>.json` and `latest.json`, which the UI displays after preparation. Other complete local participants can join the cohort. This full-coverage admission rule is stricter than upstream's partial-score support; the formula/weights are unchanged. Cohort-dependent normalizers mean local three-server and historical five-server scores are not interchangeable. Never fill local participants using historical measurements.
 
 Run `just bench-test` to check the benchmark's semantic assertions and target selection. For commands and options: `bun benchmarks/bench.ts help`.
 
@@ -277,3 +306,13 @@ Compare unchanged TS-CS01 and TS-LK01 at explicit pool 32, 1/10/50 VU, 5-second 
 30-second windows; repeat loaded lookup in reverse server order. Keep all seven local gates,
 fixture/harness fingerprints and extra-content labels. See the report for CPU/RSS, low-rate
 losses, fallback limitations and the pinned local reference protocol.
+
+## Inline ValueSet follow-up
+
+Request-local expansion and membership are now supported through the existing bounded fresh compose plans. See [the inline report](../docs/INLINE_VALUESET_REPORT.md) for selectors, versions, the 256-KiB input limit and error behavior. The unchanged upstream audit still passes 2/20: inline requests now reach missing/incomplete clinical dependencies, not a mandatory-URL rejection. This does not establish a clinical score.
+
+Canonical UCUM lookup/CodeSystem validation now use the ready `octofhir-ucum` 0.9.1 library (UCUM 2.2), not an imported common-units list. See [the UCUM contract and release checks](../docs/UCUM_PROVIDER_REPORT.md). This adds product capability, not a standalone Round 0 scenario or measured composite gain.
+
+## Native RF2 and another-device continuation
+
+The CLI now provides `migrate` and checksummed native `import-snomed --manifest FILE [--dry-run]`. Apply migration `20261103000001_snomed_rf2` before starting the new backend. See [RF2 input/storage/read limits](../docs/SNOMED_RF2_REPORT.md) and [the clean-machine handoff](../docs/NEXT_SESSION.md). Clinical files are not committed. Native lookup/validation/subsumption do not imply native ValueSet/implicit/filter/ECL support or an improved composite.

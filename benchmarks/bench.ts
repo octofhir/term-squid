@@ -64,7 +64,50 @@ function identifier(value: string, label: string) {
   return value;
 }
 
-async function fetchUpstream() {
+export function runProtocol(suite: string, options: Record<string, any> = {}) {
+  if (!['local', 'upstream'].includes(suite)) throw new Error('Unknown benchmark suite.');
+  const clinical = suite === 'upstream';
+  const duration = options.duration || (clinical ? upstream.protocol.duration : '10s');
+  const warmup = options.warmup || (clinical ? upstream.protocol.warmup : '3s');
+  const vus = [...new Set(String(options.vus || '1,10,50').split(',').map(Number))];
+  if (vus.some(v => !Number.isInteger(v) || v < 1 || v > 10000)) throw new Error('--vus must contain positive integers up to 10000.');
+  if (!/^[1-9]\d*(ms|s|m)$/.test(duration) || !/^\d+(ms|s|m)$/.test(warmup)) throw new Error('Use durations such as 10s or 1m. Warmup may be 0s.');
+  return {duration, warmup, vus, warmupVus: clinical ? upstream.protocol.warmupVus : 1,
+    warmupScope: clinical ? 'global' : 'per-test', interTestPauseMs: clinical ? upstream.protocol.interTestPauseMs : 0,
+    timingMatchesRound0: clinical && duration === upstream.protocol.duration && warmup === upstream.protocol.warmup &&
+      JSON.stringify(vus) === JSON.stringify(upstream.protocol.vus)};
+}
+export function datasetIdentity(source: string) {
+  const data = JSON.parse(source);
+  if (data.profile !== upstream.reference.run || data.attestedLoaded !== true || !Array.isArray(data.sources) ||
+      data.sources.length !== upstream.datasetSources.length ||
+      new Set(data.sources.map((s: any) => `${s.id}|${s.version}`)).size !== data.sources.length ||
+      !upstream.datasetSources.every(required => data.sources.some((s: any) => s.id === required.id &&
+        s.version === required.version && /^[a-f0-9]{64}$/.test(s.sha256)))) {
+    throw new Error('Declare the complete pinned Round 0 corpus, source SHA-256 values and attestedLoaded=true. This is an operator attestation, not automatic database verification.');
+  }
+  return {sha256: createHash('sha256').update(source).digest('hex'), data, verification: 'operator-attested'};
+}
+export function upstreamPreflightTests(tests: string[]) {
+  return tests.includes('LK05') ? [...new Set([...tests, 'LK01'])] : tests;
+}
+export function admittedTests(tests: string[], results: Record<string, {status: string}>, suite: string) {
+  const blocked = suite === 'upstream' && tests.includes('LK05') && results.LK05?.status === 'pass' && results.LK01?.status !== 'pass'
+    ? [{test: 'LK05', dependency: 'LK01', reason: 'A missing SNOMED system must not count as a fast negative code lookup.'}] : [];
+  return {passing: tests.filter(id => results[id]?.status === 'pass' && !blocked.some(b => b.test === id)), blocked};
+}
+async function upstreamHarness() {
+  const files = (await required(['git', 'ls-files', '-z', 'k6', 'preflight', 'config', 'scripts/run.ts', 'scripts/lib/scoring.ts'], SOURCE))
+    .split('\0').filter(Boolean).sort();
+  const sources = await Promise.all(files.map(async file => [file, await readFile(join(SOURCE, file), 'utf8')] as const));
+  for (const file of ['benchmarks/bench.ts', 'benchmarks/upstream.json']) {
+    files.push(file);
+    sources.push([file, await readFile(join(ROOT, file), 'utf8')]);
+  }
+  return {files, sha256: sourceFingerprint(sources)};
+}
+
+export async function fetchUpstream() {
   await mkdir(WORK, {recursive: true});
   if (!existsSync(SOURCE)) await required(['git', 'clone', '--no-checkout', '--filter=blob:none', upstream.repository, SOURCE]);
   const dirty = await required(['git', 'status', '--porcelain', '--untracked-files=no'], SOURCE);
@@ -124,11 +167,8 @@ async function run(options: Record<string, any>) {
   const name = identifier(options.name || 'term-squid', 'server name');
   const runId = identifier(options['run-id'] || `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`, 'run ID');
   const tests = selectedTests(options.tests, suite === 'local' ? CASES.map((c) => c.id) : ALL_UPSTREAM);
-  const vus = [...new Set(String(options.vus || '1,10,50').split(',').map(Number))];
-  if (vus.some((v) => !Number.isInteger(v) || v < 1 || v > 10000)) throw new Error('--vus must contain positive integers up to 10000.');
-  const duration = options.duration || '10s';
-  const warmup = options.warmup || '3s';
-  if (!/^[1-9]\d*(ms|s|m)$/.test(duration) || !/^\d+(ms|s|m)$/.test(warmup)) throw new Error('Use durations such as 10s or 1m. Warmup may be 0s.');
+  const protocol = runProtocol(suite, options);
+  const {vus, duration, warmup} = protocol;
   const k6Version = await required(['k6', 'version']);
   const metadata = await response(base, {path: '/metadata'});
   if (metadata.status !== 200 || metadata.body?.resourceType !== 'CapabilityStatement') {
@@ -147,6 +187,10 @@ async function run(options: Record<string, any>) {
     runnerCommit: await required(['git', 'rev-parse', 'HEAD']),
     runnerDirty: !!(await required(['git', 'status', '--porcelain'])),
     localHarness: suite === 'local' ? await localHarness() : null,
+    upstreamHarness: suite === 'upstream' ? await upstreamHarness() : null, protocol,
+    dataIdentity: options['dataset-manifest'] ? datasetIdentity(await readFile(resolve(options['dataset-manifest']), 'utf8')) : null,
+    environmentLabel: options['environment-label'] || null,
+    comparisonStatus: suite === 'upstream' ? 'coverage-only-until-data-and-host-match' : 'synthetic-regression-only',
     serverSoftware: metadata.body.software, fhirVersion: metadata.body.fhirVersion,
     serverRevision: options['server-revision'] || null,
     dataset: fixtureData || options['dataset-label'] || 'External dataset: record exact terminology and package versions before comparing runs.',
@@ -179,11 +223,13 @@ async function run(options: Record<string, any>) {
       preflight = {run: runId, server: name, base_url: base, timestamp: new Date().toISOString(), tests: results};
       await save(join(out, 'preflight.json'), preflight);
     } else {
-      await k6([join(SOURCE, 'preflight/run.js')], 'preflight.log', {TESTS_FILTER: tests.join(',')});
+      await k6([join(SOURCE, 'preflight/run.js')], 'preflight.log', {TESTS_FILTER: upstreamPreflightTests(tests).join(',')});
       preflight = await json(join(out, 'preflight.json'));
     }
-    const passing = tests.filter((id) => preflight.tests[id]?.status === 'pass');
-    for (const id of tests) console.log(`${id}: ${preflight.tests[id]?.status || 'missing'}`);
+    const {passing, blocked} = admittedTests(tests, preflight.tests, suite);
+    manifest.admissionFailures = blocked;
+    if (suite === 'upstream') manifest.referenceCoverage = {passed: passing.length, selected: tests.length, total: ALL_UPSTREAM.length};
+    for (const id of tests) console.log(`${id}: ${blocked.some(b => b.test === id) ? 'blocked (positive context missing)' : preflight.tests[id]?.status || 'missing'}`);
     manifest.passingTests = passing;
     manifest.coverage = {passed: passing.length, selected: tests.length};
     if (!passing.length || (options.strict && passing.length !== tests.length)) {
@@ -191,10 +237,15 @@ async function run(options: Record<string, any>) {
       throw new Error(`Preflight: ${passing.length}/${tests.length} passed. Failing scenarios were not benchmarked. See ${out}`);
     }
     if (!options['preflight-only']) {
-      for (const id of passing) {
+      const doWarmup = !/^0(ms|s|m)$/.test(warmup);
+      if (suite === 'upstream' && doWarmup) {
+        await k6(['--vus', String(protocol.warmupVus), '--duration', warmup, join(SOURCE, 'k6/warmup.js')], 'global-warmup.log');
+      }
+      for (const [index, id] of passing.entries()) {
+        if (index > 0 && protocol.interTestPauseMs > 0) await Bun.sleep(protocol.interTestPauseMs);
         const script = suite === 'local' ? join(ROOT, 'benchmarks/local/load.js') :
           join(SOURCE, 'k6', id.slice(0, 2), `${id}.js`);
-        if (!/^0(ms|s|m)$/.test(warmup)) {
+        if (suite === 'local' && doWarmup) {
           await k6(['--vus', '1', '--duration', warmup, script], `${id}-warmup.log`, {
             TEST_ID: id, VUS: '1', RESULT_FILE: join(out, 'warmup.json'),
           });
@@ -232,13 +283,15 @@ async function main() {
     suite: {type: 'string'}, url: {type: 'string'}, name: {type: 'string'}, tests: {type: 'string'},
     vus: {type: 'string'}, duration: {type: 'string'}, warmup: {type: 'string'}, 'run-id': {type: 'string'},
     'dataset-label': {type: 'string'}, strict: {type: 'boolean'}, 'preflight-only': {type: 'boolean'},
-    'server-revision': {type: 'string'},
+    'server-revision': {type: 'string'}, 'dataset-manifest': {type: 'string'}, 'environment-label': {type: 'string'},
     'allow-remote': {type: 'boolean'}, help: {type: 'boolean'},
   }});
   if (values.help || action === 'help') {
     console.log('Usage: bun benchmarks/bench.ts <fixtures|seed|fetch|run> [options]\n' +
       'run: --suite local|upstream --url URL --name NAME --tests ID,ID --vus 1,10,50\n' +
-      '     --duration 10s --warmup 3s --preflight-only --strict --run-id ID --dataset-label TEXT\n' +
+      '     --duration DURATION --warmup DURATION --preflight-only --strict --run-id ID --dataset-label TEXT\n' +
+      '     --dataset-manifest FILE --environment-label TEXT --server-revision REVISION\n' +
+      'Defaults: local 10s / 3s per-test warmup; upstream 30s / 5s global warmup at 10 VU.\n' +
       'Targets default to local /r4. --allow-remote opts in to load on your own remote server.\n' +
       `Local scenarios: ${CASES.map((c) => c.id).join(', ')}`);
   } else if (action === 'fixtures') await fixtures();

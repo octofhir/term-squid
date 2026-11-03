@@ -1,0 +1,66 @@
+{
+  "profile": "round-0",
+  "attestedLoaded": false,
+  "sources": [
+    {
+      "id": "snomed-international",
+      "version": "20260201",
+      "sha256": ""
+    },
+    {
+      "id": "snomed-us",
+      "version": "20260301",
+      "sha256": ""
+    },
+    {
+      "id": "snomed-uk",
+      "version": "20260211",
+      "sha256": ""
+    },
+    {
+      "id": "loinc",
+      "version": "2.82",
+      "sha256": ""
+    },
+    {
+      "id": "rxnorm",
+      "version": "2026-03",
+      "sha256": ""
+    },
+    {
+      "id": "hl7.fhir.r4.core",
+      "version": "4.0.1",
+      "sha256": ""
+    },
+    {
+      "id": "hl7.terminology",
+      "version": "7.0.1",
+      "sha256": ""
+    },
+    {
+      "id": "hl7.fhir.us.core",
+      "version": "6.1.0",
+      "sha256": ""
+    },
+    {
+      "id": "us.nlm.vsac",
+      "version": "0.24.0",
+      "sha256": ""
+    },
+    {
+      "id": "hl7.fhir.uv.ips",
+      "version": "2.0.0",
+      "sha256": ""
+    },
+    {
+      "id": "us.cdc.phinvads",
+      "version": "0.12.0",
+      "sha256": ""
+    },
+    {
+      "id": "hl7.fhir.uv.ips",
+      "version": "1.1.0",
+      "sha256": ""
+    }
+  ]
+}

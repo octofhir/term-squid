@@ -283,7 +283,7 @@ bench-db:
 
 # Apply the actual application migrations to the benchmark database
 bench-migrate:
-    sqlx migrate run --source crates/backend/migrations --database-url "{{bench_database_url}}"
+    CARGO_TARGET_DIR=.benchmarks/target cargo run --release --bin term-squid-cli -- --database-url "{{bench_database_url}}" migrate
 
 # Prepare the isolated database and synthetic data
 bench-setup: bench-db bench-migrate bench-seed
@@ -303,3 +303,24 @@ bench-test:
 # Benchmark the health endpoint (transport smoke test only; requires Apache Bench)
 bench-health:
     ab -n 1000 -c 10 http://localhost:8081/health
+
+# Inspect the pinned HealthSamurai Round 0 archive without contacting its production server
+bench-reference:
+    bun benchmarks/healthsamurai.ts reference
+
+# Canonical upstream timing; require full preflight coverage before any local load
+[positional-arguments]
+bench-round0 *args:
+    bun benchmarks/bench.ts run --suite upstream --strict "$@"
+
+# Original HealthSamurai UI plus a separate page for our matched local measurements
+bench-ui:
+    bun benchmarks/ui.ts serve
+
+# Build the generated local benchmark report site without starting a server
+bench-ui-build:
+    bun benchmarks/ui.ts build
+
+# Score a complete, same-environment term-squid / Termbox / FHIRsmith upstream cohort
+bench-score run:
+    bun benchmarks/healthsamurai.ts score {{run}}

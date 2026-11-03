@@ -134,10 +134,26 @@ pub async fn validate_code_vs_post(
     State(store): State<Arc<dyn TerminologyStore>>,
     Json(params): Json<Parameters>,
 ) -> Result<Json<Parameters>, AppError> {
+    let inline = params.inline_value_set(false)?;
+    if inline.is_some() {
+        params.validate_inline_fields(
+            &[
+                "valueSetVersion",
+                "system",
+                "code",
+                "systemVersion",
+                "display",
+            ],
+            &[],
+        )?;
+    }
     let value_set_url = params
         .get_string("url")
         .or_else(|| params.get_uri("url"))
-        .ok_or_else(|| AppError::BadRequest("url parameter required for ValueSet".to_string()))?;
+        .or_else(|| inline.map(|_| "urn:term-squid:inline"))
+        .ok_or_else(|| {
+            AppError::BadRequest("url or valueSet parameter required for ValueSet".to_string())
+        })?;
     let code = params
         .get_string("code")
         .or_else(|| params.get_code("code"))
@@ -146,6 +162,18 @@ pub async fn validate_code_vs_post(
         AppError::BadRequest("system parameter required for ValueSet validation".to_string())
     })?;
     let display = params.get_string("display");
+
+    if let Some(resource) = inline {
+        let system_version = params.get_string("systemVersion");
+        let expanded = store
+            .compose_inline(
+                resource,
+                params.get_string("valueSetVersion"),
+                system_version.map(|v| (system, v)),
+            )
+            .await?;
+        return validate_members(expanded.members, system_version, system, code, display);
+    }
 
     perform_validate_code_valueset(
         store,
@@ -196,6 +224,7 @@ pub async fn validate_code_vs_instance_post(
     Path(id): Path<Uuid>,
     Json(params): Json<Parameters>,
 ) -> Result<Json<Parameters>, AppError> {
+    params.inline_value_set(true)?;
     let code = params
         .get_string("code")
         .or_else(|| params.get_code("code"))

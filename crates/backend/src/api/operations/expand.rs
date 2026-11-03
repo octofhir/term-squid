@@ -31,7 +31,7 @@ pub async fn expand_get(
         .clone()
         .ok_or_else(|| AppError::BadRequest("url parameter required".to_string()))?;
 
-    perform_expand(store, &url, params, None).await
+    perform_expand(store, &url, params, None, None).await
 }
 
 /// POST /ValueSet/$expand with Parameters body
@@ -39,10 +39,15 @@ pub async fn expand_post(
     State(store): State<Arc<dyn TerminologyStore>>,
     Json(params): Json<Parameters>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let inline = params.inline_value_set(false)?;
+    if inline.is_some() {
+        params.validate_inline_fields(&["valueSetVersion", "filter"], &["offset", "count"])?;
+    }
     let url = params
         .get_string("url")
         .or_else(|| params.get_uri("url"))
-        .ok_or_else(|| AppError::BadRequest("url parameter required".to_string()))?;
+        .or_else(|| inline.map(|_| "urn:term-squid:inline"))
+        .ok_or_else(|| AppError::BadRequest("url or valueSet parameter required".to_string()))?;
 
     let expand_params = ExpandParams {
         url: Some(url.to_string()),
@@ -52,7 +57,7 @@ pub async fn expand_post(
         count: params.get_integer("count"),
     };
 
-    perform_expand(store, url, expand_params, None).await
+    perform_expand(store, url, expand_params, None, inline).await
 }
 
 /// GET /ValueSet/{id}/$expand
@@ -61,7 +66,7 @@ pub async fn expand_instance_get(
     Path(id): Path<Uuid>,
     Query(params): Query<ExpandParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    perform_expand(store, "urn:term-squid:instance", params, Some(id)).await
+    perform_expand(store, "urn:term-squid:instance", params, Some(id), None).await
 }
 
 /// POST /ValueSet/{id}/$expand with Parameters body
@@ -70,6 +75,7 @@ pub async fn expand_instance_post(
     Path(id): Path<Uuid>,
     Json(params): Json<Parameters>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    params.inline_value_set(true)?;
     let expand_params = ExpandParams {
         url: None,
         value_set_version: params.get_string("valueSetVersion").map(str::to_owned),
@@ -77,7 +83,14 @@ pub async fn expand_instance_post(
         offset: params.get_integer("offset"),
         count: params.get_integer("count"),
     };
-    perform_expand(store, "urn:term-squid:instance", expand_params, Some(id)).await
+    perform_expand(
+        store,
+        "urn:term-squid:instance",
+        expand_params,
+        Some(id),
+        None,
+    )
+    .await
 }
 
 async fn perform_expand(
@@ -85,6 +98,7 @@ async fn perform_expand(
     url: &str,
     params: ExpandParams,
     id: Option<Uuid>,
+    inline: Option<&serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if params.offset.is_some_and(|n| n < 0)
         || params.count.is_some_and(|n| !(0..=10000).contains(&n))
@@ -95,6 +109,10 @@ async fn perform_expand(
     }
     let expanded = if let Some(id) = id {
         store.expand_compose_by_id(&id).await?
+    } else if let Some(resource) = inline {
+        store
+            .compose_inline(resource, params.value_set_version.as_deref(), None)
+            .await?
     } else {
         store
             .expand_compose(url, params.value_set_version.as_deref())

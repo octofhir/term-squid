@@ -16,7 +16,12 @@ pub struct Parameter {
     #[serde(flatten)]
     pub value: Option<ParameterValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<Vec<Parameter>>,
+    // Retain unrecognized value[x] keys so resource inputs cannot hide mixed forms.
+    #[serde(flatten, skip_serializing)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Parameter value types according to FHIR spec
@@ -59,6 +64,98 @@ pub struct CodeableConcept {
 }
 
 impl Parameters {
+    /// Do not silently discard result-affecting options on the supported inline subset.
+    pub fn validate_inline_fields(
+        &self,
+        strings: &[&str],
+        integers: &[&str],
+    ) -> Result<(), crate::error::AppError> {
+        use crate::error::AppError;
+        let mut seen = std::collections::BTreeSet::new();
+        for parameter in self.parameter.iter().flatten() {
+            let name = parameter.name.as_str();
+            if !seen.insert(name) {
+                return Err(AppError::BadRequest(format!("Duplicate {name} parameter")));
+            }
+            if name == "valueSet" {
+                continue; // The resource selector has its own structural check.
+            }
+            let typed = if strings.contains(&name) {
+                self.get_string(name).is_some()
+            } else if integers.contains(&name) {
+                self.get_integer(name).is_some()
+            } else {
+                return Err(AppError::BadRequest(format!(
+                    "Unsupported inline parameter {name}"
+                )));
+            };
+            if !typed
+                || parameter.resource.is_some()
+                || parameter.part.is_some()
+                || parameter.other.keys().any(|key| key.starts_with("value"))
+            {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid inline parameter type: {name}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the request-local ValueSet selector without silently using a stored root.
+    pub fn inline_value_set(
+        &self,
+        instance: bool,
+    ) -> Result<Option<&serde_json::Value>, crate::error::AppError> {
+        use crate::error::AppError;
+        if self.resource_type != "Parameters" {
+            return Err(AppError::BadRequest(
+                "Expected a Parameters resource".into(),
+            ));
+        }
+        for name in ["valueSet", "url", "valueSetVersion"] {
+            if self
+                .parameter
+                .iter()
+                .flatten()
+                .filter(|p| p.name == name)
+                .count()
+                > 1
+            {
+                return Err(AppError::BadRequest(format!("Duplicate {name} parameter")));
+            }
+        }
+        let Some(parameter) = self.get_parameter("valueSet") else {
+            return Ok(None);
+        };
+        if parameter.value.is_some()
+            || parameter.part.is_some()
+            || parameter.resource.is_none()
+            || parameter.other.keys().any(|key| key.starts_with("value"))
+        {
+            return Err(AppError::BadRequest(
+                "valueSet must contain exactly one resource, not value[x] or part".into(),
+            ));
+        }
+        if instance || self.get_parameter("url").is_some() {
+            return Err(AppError::BadRequest(
+                "Choose one ValueSet selector: instance, url or inline valueSet".into(),
+            ));
+        }
+        if let Some(version) = self.get_parameter("valueSetVersion") {
+            if version.resource.is_some()
+                || version.part.is_some()
+                || self.get_string("valueSetVersion").is_none()
+                || version.other.keys().any(|key| key.starts_with("value"))
+            {
+                return Err(AppError::BadRequest(
+                    "valueSetVersion must be a string".into(),
+                ));
+            }
+        }
+        Ok(parameter.resource.as_ref())
+    }
+
     pub fn new() -> Self {
         Self {
             resource_type: "Parameters".to_string(),
@@ -128,7 +225,9 @@ impl Parameter {
         Self {
             name: name.into(),
             value: Some(ParameterValue::ValueString(value.into())),
+            resource: None,
             part: None,
+            other: Default::default(),
         }
     }
 
@@ -136,7 +235,9 @@ impl Parameter {
         Self {
             name: name.into(),
             value: Some(ParameterValue::ValueBoolean(value)),
+            resource: None,
             part: None,
+            other: Default::default(),
         }
     }
 
@@ -144,7 +245,9 @@ impl Parameter {
         Self {
             name: name.into(),
             value: Some(ParameterValue::ValueCode(value.into())),
+            resource: None,
             part: None,
+            other: Default::default(),
         }
     }
 
@@ -152,7 +255,9 @@ impl Parameter {
         Self {
             name: name.into(),
             value: Some(ParameterValue::ValueCoding(coding)),
+            resource: None,
             part: None,
+            other: Default::default(),
         }
     }
 
@@ -160,7 +265,9 @@ impl Parameter {
         Self {
             name: name.into(),
             value: None,
+            resource: None,
             part: Some(parts),
+            other: Default::default(),
         }
     }
 }

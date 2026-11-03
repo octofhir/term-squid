@@ -81,6 +81,14 @@ pub trait TerminologyStore: Send + Sync {
 
     async fn expand_compose_by_id(&self, id: &uuid::Uuid) -> Result<ExpandedValueSet, AppError>;
 
+    /// Prepare an ephemeral root using one fresh snapshot of its stored dependencies.
+    async fn compose_inline(
+        &self,
+        resource: &Value,
+        value_set_version: Option<&str>,
+        system_context: Option<(&str, &str)>,
+    ) -> Result<ExpandedValueSet, AppError>;
+
     async fn compose_for_validation(
         &self,
         url: &str,

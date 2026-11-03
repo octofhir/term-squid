@@ -70,7 +70,12 @@ pub async fn terminology_capabilities() -> Json<Value> {
             "name": "term-squid",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "codeSystem": [],
+        "description": "Canonical UCUM lookup and CodeSystem validation use the bundled immutable grammar provider. Stored and instance operations retain their separate content context.",
+        "codeSystem": [{
+            "uri": term_squid_core::ucum::SYSTEM,
+            "version": [{"code": term_squid_core::ucum::VERSION, "isDefault": true, "compositional": true}],
+            "subsumption": false
+        }],
         "expansion": {
             "hierarchical": false,
             "paging": true

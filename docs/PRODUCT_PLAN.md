@@ -6,6 +6,23 @@ term-squid is a standalone terminology product with its own FHIR API, content, s
 
 The first product release prioritizes local code systems, HL7, LOINC and UCUM. FHIR compatibility is required; performance comes from prepared data, indexes, compact representations and execution design.
 
+## Current execution priority: composite leadership
+
+For cross-device continuation, start with [NEXT_SESSION.md](NEXT_SESSION.md).
+
+The primary performance KPI is now **first place by the unchanged HealthSamurai TX Benchmark composite**, with direct local Termbox and FHIRsmith comparisons. The earlier 3x FHIRsmith and 12k synthetic targets remain secondary diagnostics, not substitutes for that ranking. See [the pinned baseline and current coverage](HEALTHSAMURAI_BASELINE.md).
+
+Current upstream preflight coverage is **2/20** on synthetic + R4 core content; no comparable clinical composite has been measured. The published leaders are Termbox 100.00, Hades 79.20 and FHIRsmith 31.96. These historical scores are not measurements on our machine. The local [dashboard](http://127.0.0.1:4100/tx-benchmark/local/) keeps published scores, coverage and actual synthetic charts separate.
+
+Execute the composite workstream before further synthetic-only tuning:
+
+1. Bounded inline ValueSet inputs for expansion/membership are implemented and tested; see [the inline increment](INLINE_VALUESET_REPORT.md). The five inline expansion scenarios now reach clinical dependency/evaluator checks, but still do not pass on the incomplete corpus. Resolve the upstream translation helper's `target` system-URI usage through an explicit compatibility decision; preserve standard R4 `target` ValueSet semantics.
+2. The [native RF2 Snapshot loader and bounded inferred subsumption](SNOMED_RF2_REPORT.md) are implemented; complete the native SNOMED ValueSet/implicit/property provider, merged-edition workflows and remaining clinical ingestion for the pinned corpus. SNOMED moves forward from later development because it affects twelve of twenty benchmark tests. Do not implement only sampled pool codes or claim full ECL support.
+3. Run the unchanged pools/protocol against separately provisioned local Termbox, FHIRsmith and term-squid with the same content/resource limits. Keep per-test coverage and zero-error timings; compute with the original scorer and weights. Historical different-host results are reference context only.
+4. Rank measured per-test composite deficits, profile those exact workloads, then optimize bounded snapshots/indexes/search and large-release fallbacks. Re-run the complete matched cohort after each candidate. A three-server local win is not yet proof of winning against every implementation; include other contenders before that claim.
+
+The [HTS audit](HTS_FEATURE_GAPS.md) identifies relevant input, clinical-import and typed-read gaps. The [UCUM increment](UCUM_PROVIDER_REPORT.md) now reuses pinned `octofhir-ucum` for canonical grammar lookup/validation and reusable Rust comparability; finite ValueSet integration remains separate. HTS has broader functionality today; public authoring/history does not displace the score-critical path. Clinical archives require their own access/content terms and remain outside Git.
+
 All Git-facing code, comments, documentation and reports are written in English. Local working notes, raw profiles, generated datasets and measurement artifacts remain under the ignored `.benchmarks/` directory.
 
 ## Contract and References
@@ -101,7 +118,7 @@ Acceptance: operations execute through the engine; frequent simple validations n
 |---|---|
 | Local code systems | Recursive concepts, typed properties, designations, languages, mappings and controlled updates |
 | HL7 | Core/THO/IG packages with dependencies, defined source precedence, pinned versions and provenance |
-| UCUM | Provider using the existing `octofhir-ucum`: expression grammar, lookup and comparability; a finite common-units list does not replace the full system |
+| UCUM | Canonical grammar lookup/validation and Rust comparability now use pinned `octofhir-ucum` 0.9.1 / model 2.2. Complete finite ValueSet/provider integration and ecosystem cases; a common-units list does not replace the grammar |
 | LOINC | Import the official release: axes, class, status, names, languages, Parts, hierarchy, Answer Lists and Groups; capabilities declare supported properties and filters |
 
 Imports record version, checksum and source. Load data in streams or batches rather than one SQL round trip per concept. An incomplete import never becomes active. Materialize large expansions as needed within memory limits. Clinical source data stays out of Git; version manifests and permitted test fixtures belong in Git.
@@ -110,7 +127,7 @@ Acceptance: reproducible content updates and rollback; correct selected HL7/LOIN
 
 ## Milestone 4: Demonstrated Speedup over FHIRsmith
 
-Performance target: at least 3x throughput on the agreed priority suite without exceeding the agreed p99 limit or reducing response semantics. This is a development target, not an achieved result. Before establishing the priority-operation baseline, fix the aggregation method and acceptable regressions so weights or omitted scenarios cannot inflate the reported speedup.
+Primary target: lead the original HealthSamurai composite with unchanged weights and verified clinical coverage, including direct local Termbox/FHIRsmith comparisons. The secondary target remains at least 3x FHIRsmith throughput on the agreed priority suite without exceeding the agreed p99 limit or reducing response semantics. Neither overall target is achieved. The original scorer/protocol is now pinned and reproducible; do not change weights or omit slow scenarios to inflate results.
 
 The user reports approximately 12,000 RPS for complex CRUD operations in OctoFHIR. Exceeding that throughput on simple terminology lookup/validation is a product target to verify on a defined workload. The batching and prepared-CodeSystem increments now exceed 12,000 RPS on synthetic lookup, CodeSystem/ValueSet validation, subsumption and forward translation at 50 VU. Single-client, clinical and mixed workloads still need their own evidence; these are not general capacity guarantees. Complex expansions require separate targets.
 
@@ -157,6 +174,6 @@ Acceptance: the UI follows OctoFHIR branding; the shared-kit/framework decision 
 
 ## Later Development
 
-R5, additional terminologies, full SNOMED CT/ECL, authoring, syndication and advanced mappings follow the priority contract. OctoFHIR integration is considered separately through the standard API; moving term-squid data into the FHIR server database is outside the plan.
+R5, additional terminologies, full ECL, authoring, syndication and advanced mappings follow the priority contract. The benchmark-required SNOMED release ingestion and explicitly tested implicit/filter subset are now in the current composite workstream, not postponed here. OctoFHIR integration is considered separately through the standard API; moving term-squid data into the FHIR server database is outside the plan.
 
 The next working increment after introducing benchmarks fixes ValueSet membership and expansion while extracting a typed resolver and compose planner into the library. Preserve preflight results and comparable measurements at each step so speed improvements cannot hide behavior changes.

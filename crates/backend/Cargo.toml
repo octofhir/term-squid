@@ -39,6 +39,7 @@ thiserror.workspace = true
 # Utilities
 uuid.workspace = true
 chrono.workspace = true
+sha2 = "0.10"
 
 # Async trait
 async-trait.workspace = true

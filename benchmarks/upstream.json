@@ -1,5 +1,95 @@
 {
   "repository": "https://github.com/HealthSamurai/tx-benchmark.git",
   "commit": "78bdffa769e21ac5d654f5dad412d1becf9d7e57",
-  "tests": ["FS01", "LK01", "LK02", "LK03", "LK04", "LK05", "VC01", "VC02", "VC03", "EX01", "EX02", "EX03", "EX04", "EX05", "EX06", "EX07", "EX08", "SS01", "CM01", "CM02"]
+  "tests": [
+    "FS01",
+    "LK01",
+    "LK02",
+    "LK03",
+    "LK04",
+    "LK05",
+    "VC01",
+    "VC02",
+    "VC03",
+    "EX01",
+    "EX02",
+    "EX03",
+    "EX04",
+    "EX05",
+    "EX06",
+    "EX07",
+    "EX08",
+    "SS01",
+    "CM01",
+    "CM02"
+  ],
+  "reference": {
+    "run": "round-0",
+    "date": "2026-05-27",
+    "url": "https://healthsamurai.github.io/tx-benchmark/results/round-0/",
+    "file": "site/src/data/round-0.json",
+    "sha256": "14ce4d93894044e197363fee4a287d23278f92fe5a3d743e9ef6b0fd3672730e"
+  },
+  "protocol": {
+    "vus": [
+      1,
+      10,
+      50
+    ],
+    "duration": "30s",
+    "warmup": "5s",
+    "warmupVus": 10,
+    "warmupScope": "global",
+    "interTestPauseMs": 5000
+  },
+  "datasetSources": [
+    {
+      "id": "snomed-international",
+      "version": "20260201"
+    },
+    {
+      "id": "snomed-us",
+      "version": "20260301"
+    },
+    {
+      "id": "snomed-uk",
+      "version": "20260211"
+    },
+    {
+      "id": "loinc",
+      "version": "2.82"
+    },
+    {
+      "id": "rxnorm",
+      "version": "2026-03"
+    },
+    {
+      "id": "hl7.fhir.r4.core",
+      "version": "4.0.1"
+    },
+    {
+      "id": "hl7.terminology",
+      "version": "7.0.1"
+    },
+    {
+      "id": "hl7.fhir.us.core",
+      "version": "6.1.0"
+    },
+    {
+      "id": "us.nlm.vsac",
+      "version": "0.24.0"
+    },
+    {
+      "id": "hl7.fhir.uv.ips",
+      "version": "2.0.0"
+    },
+    {
+      "id": "us.cdc.phinvads",
+      "version": "0.12.0"
+    },
+    {
+      "id": "hl7.fhir.uv.ips",
+      "version": "1.1.0"
+    }
+  ]
 }

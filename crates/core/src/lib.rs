@@ -1,5 +1,7 @@
 //! Storage-independent terminology primitives and bounded, immutable compose evaluation.
 mod concepts;
+pub mod snomed;
+pub mod ucum;
 pub use concepts::{PreparedConcepts, ProjectedConcept};
 mod translation;
 pub use translation::{PreparedConceptMap, TranslationMatch};

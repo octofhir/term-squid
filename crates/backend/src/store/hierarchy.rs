@@ -56,6 +56,7 @@ struct Metadata {
     id: Uuid,
     hierarchy_meaning: Option<String>,
     case_sensitive: bool,
+    native_provider: Option<String>,
 }
 
 #[derive(Default)]
@@ -140,7 +141,7 @@ impl HierarchyPlans {
             return Ok(plan.resolve(a, b, &observed));
         }
         let metadata = sqlx::query_as::<_,Metadata>(
-            "SELECT id,hierarchy_meaning,case_sensitive FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+            "SELECT id,hierarchy_meaning,case_sensitive,native_provider FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
         let Some(metadata) = metadata else {
             tx.commit().await?;
@@ -154,6 +155,8 @@ impl HierarchyPlans {
                 Vec::new(),
                 Vec::new(),
             )
+        } else if metadata.native_provider.is_some() {
+            (Some(Snapshot::Sql), Vec::new(), Vec::new())
         } else {
             let (count, bytes): (i64,i64) = sqlx::query_as(
                 "SELECT count(*)::bigint,COALESCE(sum(octet_length(code)+octet_length(comparison_key)),0)::bigint FROM (SELECT code,CASE WHEN $3::boolean THEN code::text ELSE lower(code) END AS comparison_key FROM concepts WHERE code_system_id=$1 LIMIT $2) bounded")

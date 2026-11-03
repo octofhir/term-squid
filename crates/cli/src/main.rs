@@ -1,5 +1,6 @@
 mod commands;
 mod package;
+mod snomed;
 mod terminology;
 
 use clap::{Parser, Subcommand};
@@ -7,7 +8,7 @@ use tracing::Level;
 
 #[derive(Parser)]
 #[command(name = "term-squid-cli")]
-#[command(about = "FHIR Package Loader for term-squid", long_about = None)]
+#[command(about = "Terminology content loader for term-squid", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -24,6 +25,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Apply the repository database migrations before starting the server
+    Migrate,
+    /// Import a locally supplied complete SNOMED RF2 Snapshot using a checksummed manifest
+    ImportSnomed {
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Import a FHIR package from a registry or local file
     Import {
         /// Package name (e.g., hl7.fhir.r4.core) or path to local .tgz file
@@ -110,6 +120,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Connected to database");
 
     match cli.command {
+        Commands::Migrate => {
+            sqlx::migrate!("../backend/migrations").run(&pool).await?;
+            println!("Repository migrations applied");
+        }
+        Commands::ImportSnomed { manifest, dry_run } => {
+            let result = snomed::import_manifest(&pool, &manifest, dry_run).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         Commands::Import {
             package,
             version,

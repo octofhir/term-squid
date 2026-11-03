@@ -32,6 +32,7 @@ type PlanKey = (
     term_squid_core::Canonical,
     Option<Uuid>,
     Option<(String, String)>,
+    Option<[u8; 32]>,
 );
 const PLAN_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -130,7 +131,7 @@ impl PostgresStore {
         id: Option<Uuid>,
         code: &str,
     ) -> Result<Option<ResolvedConcept>, AppError> {
-        match self
+        let result = match self
             .concepts
             .resolve(&self.pool, &self.generations, &root, id, code)
             .await?
@@ -141,7 +142,13 @@ impl PostgresStore {
                 self.resolve_row(&root.url, root.version.as_deref(), code, id)
                     .await
             }
+        }?;
+        if let Some(row) = &result {
+            if row.native_provider.as_deref() == Some("snomed-rf2") {
+                term_squid_core::snomed::reject_expression(code)?;
+            }
         }
+        Ok(result)
     }
     async fn prepared_subsumption(
         &self,
@@ -257,8 +264,8 @@ impl PostgresStore {
     ) -> Result<Option<ResolvedConcept>, AppError> {
         // A missing concept still returns system metadata, distinguishing unknown content.
         Ok(sqlx::query_as::<_, ResolvedConcept>(r#"
-            SELECT s.name, s.version, s.content_mode, c.code, c.display, c.definition, c.properties
-            FROM (SELECT id, name, version, content_mode, case_sensitive FROM code_systems
+            SELECT s.native_provider, s.name, s.version, CASE WHEN s.native_provider IS NOT NULL THEN 'complete' ELSE s.content_mode END AS content_mode, c.code, c.display, c.definition, c.properties
+            FROM (SELECT id, name, version, content_mode, case_sensitive, native_provider FROM code_systems
                   WHERE ($4::uuid IS NOT NULL AND id = $4) OR ($4::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
                   ORDER BY updated_at DESC, id LIMIT 1) s
             LEFT JOIN LATERAL (
@@ -279,69 +286,29 @@ impl PostgresStore {
         code_b: &str,
         id: Option<Uuid>,
     ) -> Result<Option<ResolvedSubsumption>, AppError> {
-        // One statement is the operation's snapshot boundary, including CLI commits.
-        // Read only indexed projections: no full resource or concept JSON is decoded.
-        // Separate case-policy branches keep exact code equality in index bounds;
-        // a mixed OR can make even case-sensitive lookup scan the whole system.
-        Ok(sqlx::query_as::<_, ResolvedSubsumption>(
-            r#"
-            SELECT s.hierarchy_meaning, a.code AS code_a, b.code AS code_b,
-                   CASE WHEN s.hierarchy_meaning = 'is-a' AND a.code <> b.code THEN
-                       CASE WHEN EXISTS (
-                           SELECT 1 FROM closure_table
-                           WHERE code_system_id = s.id
-                             AND ancestor_code = a.code AND descendant_code = b.code
-                       ) THEN true
-                       WHEN EXISTS (
-                           SELECT 1 FROM closure_table
-                           WHERE code_system_id = s.id
-                             AND ancestor_code = b.code AND descendant_code = a.code
-                       ) THEN false END
-                   END AS relationship
-            FROM (SELECT id, hierarchy_meaning, case_sensitive FROM code_systems
-                  WHERE ($5::uuid IS NOT NULL AND id = $5) OR
-                        ($5::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
-                  ORDER BY updated_at DESC, id LIMIT 1) s
-            LEFT JOIN LATERAL (
-                SELECT code FROM concepts
-                WHERE s.case_sensitive AND code_system_id = s.id AND code = $3
-                UNION ALL
-                SELECT code FROM concepts
-                WHERE NOT s.case_sensitive AND code_system_id = s.id AND lower(code) = lower($3)
-                LIMIT 1
-            ) a ON true
-            LEFT JOIN LATERAL (
-                SELECT code FROM concepts
-                WHERE s.case_sensitive AND code_system_id = s.id AND code = $4
-                UNION ALL
-                SELECT code FROM concepts
-                WHERE NOT s.case_sensitive AND code_system_id = s.id AND lower(code) = lower($4)
-                LIMIT 1
-            ) b ON true
-        "#,
-        )
-        .bind(url)
-        .bind(version)
-        .bind(code_a)
-        .bind(code_b)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?)
+        super::subsumption::resolve(&self.pool, url, version, code_a, code_b, id).await
     }
+
     async fn compose_snapshot(
         &self,
         url: &str,
         version: Option<&str>,
         id: Option<Uuid>,
         system_context: Option<(&str, &str)>,
+        inline: Option<super::inline::InlineValueSet>,
     ) -> Result<ExpandedValueSet, AppError> {
         use std::collections::BTreeSet;
         use term_squid_core::{Canonical, Compose, PreparedSystem, Snapshot, MAX_RESOURCES};
-        let root = Canonical::parse(url, version)?;
+        let root = inline
+            .as_ref()
+            .map(|v| v.canonical.clone())
+            .map(Ok)
+            .unwrap_or_else(|| Canonical::parse(url, version))?;
         let cache_key = (
             root.clone(),
             id,
             system_context.map(|(s, v)| (s.to_owned(), v.to_owned())),
+            inline.as_ref().map(|v| v.fingerprint),
         );
         // A fresh autocommit statement is the warm operation's snapshot boundary.
         // No time-based generation cache: a request starting after a CLI commit sees it.
@@ -372,6 +339,7 @@ impl PostgresStore {
         let mut pending = vec![root.clone()];
         let mut seen = BTreeSet::new();
         let mut base_resource = None;
+        let mut inline = inline;
         while let Some(key) = pending.pop() {
             if !seen.insert(key.clone()) {
                 continue;
@@ -381,20 +349,25 @@ impl PostgresStore {
                     "Compose resource limit exceeded".into(),
                 ));
             }
-            let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
+            let resource = if key == root && inline.is_some() {
+                let inline = inline.take().expect("Inline root is present");
+                bytes_remaining -= inline.bytes as i64;
+                inline.resource
+            } else {
+                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
                 "SELECT CASE WHEN octet_length(content::text) <= $4 THEN content END, octet_length(content::text)::bigint FROM value_sets WHERE ($3::uuid IS NOT NULL AND id = $3) OR ($3::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2)) ORDER BY updated_at DESC, id LIMIT 1")
                 .bind(&key.url).bind(&key.version).bind(if key == root { id } else { None }).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
-            let row = row.ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "ValueSet {} version {:?} not found",
-                    key.url, key.version
-                ))
-            })?;
-            bytes_remaining -= row.1;
-            let resource = row
-                .0
-                .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
-                .0;
+                let row = row.ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "ValueSet {} version {:?} not found",
+                        key.url, key.version
+                    ))
+                })?;
+                bytes_remaining -= row.1;
+                row.0
+                    .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
+                    .0
+            };
             if key == root {
                 base_resource = Some(resource.clone());
             }
@@ -414,8 +387,8 @@ impl PostgresStore {
                         "Compose resource limit exceeded".into(),
                     ));
                 }
-                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
-                    "SELECT CASE WHEN octet_length(content::text) <= $3 THEN content END, octet_length(content::text)::bigint FROM code_systems WHERE url = $1 AND ($2::text IS NULL OR version = $2) ORDER BY updated_at DESC, id LIMIT 1")
+                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64, Option<String>)> = sqlx::query_as(
+                    "SELECT CASE WHEN native_provider IS NULL AND octet_length(content::text) <= $3 THEN content END, octet_length(content::text)::bigint, native_provider FROM code_systems WHERE url = $1 AND ($2::text IS NULL OR version = $2) ORDER BY updated_at DESC, id LIMIT 1")
                     .bind(&system.url).bind(system.version.as_deref().or_else(|| system_context.filter(|(url, _)| *url == system.url).map(|(_, version)| version))).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
                 let row = row.ok_or_else(|| {
                     AppError::NotFound(format!(
@@ -423,6 +396,11 @@ impl PostgresStore {
                         system.url, system.version
                     ))
                 })?;
+                if row.2.is_some() {
+                    return Err(AppError::Terminology(term_squid_core::Error(
+                        "Native SNOMED compose requires a provider; finite JSON preparation is unsupported".into(),
+                    )));
+                }
                 bytes_remaining -= row.1;
                 let resource = row
                     .0
@@ -467,7 +445,8 @@ impl PostgresStore {
                 .map_err(|e| AppError::Internal(e.into()))?
                 .len()
                 * 64
-            + 4096;
+            + 4096
+            + 32;
         self.prepared
             .lock()
             .await
@@ -493,6 +472,25 @@ impl TerminologyStore for PostgresStore {
         code: &str,
     ) -> Result<Option<ResolvedConcept>, AppError> {
         let canonical = term_squid_core::Canonical::parse(url, version)?;
+        if canonical.url == term_squid_core::ucum::SYSTEM
+            && canonical
+                .version
+                .as_deref()
+                .is_none_or(|v| v == term_squid_core::ucum::VERSION)
+        {
+            let concept =
+                term_squid_core::ucum::UcumProvider::lookup(code, canonical.version.as_deref())?;
+            return Ok(Some(ResolvedConcept {
+                native_provider: None,
+                name: Some("UCUM".into()),
+                version: Some(term_squid_core::ucum::VERSION.into()),
+                content_mode: Some("complete".into()),
+                code: concept.as_ref().map(|c| c.code.clone()),
+                display: concept.map(|c| c.display),
+                definition: None,
+                properties: None,
+            }));
+        }
         self.prepared_concept(canonical, None, code).await
     }
     async fn resolve_concept_by_id(
@@ -513,11 +511,28 @@ impl TerminologyStore for PostgresStore {
         url: &str,
         version: Option<&str>,
     ) -> Result<ExpandedValueSet, AppError> {
-        self.compose_snapshot(url, version, None, None).await
+        self.compose_snapshot(url, version, None, None, None).await
     }
     async fn expand_compose_by_id(&self, id: &Uuid) -> Result<ExpandedValueSet, AppError> {
-        self.compose_snapshot("urn:term-squid:instance", None, Some(*id), None)
+        self.compose_snapshot("urn:term-squid:instance", None, Some(*id), None, None)
             .await
+    }
+
+    async fn compose_inline(
+        &self,
+        resource: &serde_json::Value,
+        value_set_version: Option<&str>,
+        system_context: Option<(&str, &str)>,
+    ) -> Result<ExpandedValueSet, AppError> {
+        let inline = super::inline::InlineValueSet::new(resource, value_set_version)?;
+        self.compose_snapshot(
+            "urn:term-squid:inline",
+            None,
+            None,
+            system_context,
+            Some(inline),
+        )
+        .await
     }
 
     async fn compose_for_validation(
@@ -528,7 +543,7 @@ impl TerminologyStore for PostgresStore {
         system: &str,
         system_version: Option<&str>,
     ) -> Result<ExpandedValueSet, AppError> {
-        self.compose_snapshot(url, version, id, system_version.map(|v| (system, v)))
+        self.compose_snapshot(url, version, id, system_version.map(|v| (system, v)), None)
             .await
     }
 
@@ -1108,7 +1123,7 @@ mod cache_tests {
             .connect_lazy("postgresql://unused:unused@127.0.0.1/unused")
             .unwrap();
         let store = PostgresStore::new(pool);
-        let key = (root, None, None);
+        let key = (root, None, None, None);
         store
             .prepared
             .lock()

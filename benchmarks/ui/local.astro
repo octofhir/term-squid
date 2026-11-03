@@ -1,0 +1,54 @@
+---
+import Base from '../layouts/Base.astro';
+import LocalChart from '../components/LocalChart.svelte';
+import report from '../data/term-squid-local.json';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const names: Record<string,string> = {'TS-CS01':'CodeSystem validation', 'TS-LK01':'CodeSystem lookup',
+  'TS-VC01':'ValueSet membership', 'TS-EX01':'ValueSet expansion', 'TS-SS01':'Hierarchy subsumption', 'TS-CM01':'Forward translation'};
+const colors = ['#818cf8', '#4ade80', '#fb923c'];
+function option(group: any, test: string, metric: string) {
+  return {color: colors, backgroundColor: 'transparent', tooltip: {trigger:'axis', axisPointer:{type:'shadow'}},
+    legend:{top:0, textStyle:{color:'#bfc7da'}, data:group.runs.map((r:any)=>r.label)},
+    grid:{left:65,right:18,top:48,bottom:38},
+    xAxis:{type:'category',data:group.vus.map((n:number)=>`${n} VU`),axisLabel:{color:'#a8b1c7'}},
+    yAxis:{type:'value',name:metric==='rps'?'requests/s':'milliseconds',nameTextStyle:{color:'#a8b1c7'},
+      axisLabel:{color:'#a8b1c7'},splitLine:{lineStyle:{color:'#293143'}}},
+    series:group.runs.map((run:any)=>({name:run.label,type:'bar',barMaxWidth:42,
+      data:group.vus.map((vus:number)=>{const p=run.points.find((p:any)=>p.test===test&&p.vus===vus);return p?(metric==='rps'?p.throughput:p.duration.p99):null;})}))};
+}
+---
+<Base title="term-squid — local benchmark charts">
+  <div class="local-report">
+    <div class="eyebrow">TERM-SQUID · RECORDED LOCAL MEASUREMENTS</div>
+    <h1>Terminology benchmark</h1>
+    <p class="intro">Measured throughput and p99 latency. Each group compares the same workload, dataset and client machine.</p>
+    <nav class="links"><a class="active" href={`${base}/local/`}>Our local runs</a><a href={`${base}/results/round-0/`}>Published HealthSamurai Round 0 ↗</a></nav>
+    <aside><strong>Different experiments, separate results.</strong> {report.warning} Round 0 uses clinical data on different hardware. Its weighted score is not the RPS of one operation. No production server was load-tested.</aside>
+    {report.localComposite && <section class="composite-panel"><h2>Matched local composite · {report.localComposite.runId}</h2><p>{report.localComposite.environmentLabel} · original scoring formula · 20/20 measured tests per server</p><div class="table-scroll"><table><thead><tr><th>Server</th><th>Score / 100</th><th>Weighted RPS</th><th>Coverage</th></tr></thead><tbody>{report.localComposite.servers.map((s:any)=><tr><td>{s.id}</td><td>{s.score.toFixed(2)}</td><td>{s.weightedRps.toFixed(1)}</td><td>{s.measured}/20</td></tr>)}</tbody></table></div></section>}
+    <section class="composite-panel">
+      <h2>Composite score · HealthSamurai Round 0</h2>
+      <p>Primary target: take first place using the original scoring formula and unchanged weights. This table is the published clinical reference, not a mixed-host ranking of our synthetic runs.</p>
+      <div class="table-scroll"><table><thead><tr><th>Server</th><th>Score / 100</th><th>Weighted RPS</th><th>Real tests</th><th>Imputed tests</th></tr></thead><tbody>
+        <tr class="our-score"><td><strong>term-squid</strong></td><td>Not measured</td><td>—</td><td>0 / 20 comparable</td><td>Not scored</td></tr>
+        {report.composite.map((server:any)=><tr><td>{server.id}<small class="server-version">{server.version}</small></td><td>{server.score.toFixed(2)}</td><td>{server.weightedRps.toLocaleString('en-US',{maximumFractionDigits:1})}</td><td>{server.measured} / 20</td><td>{server.imputed}</td></tr>)}
+      </tbody></table></div>
+      <p class="score-note">term-squid needs the same clinical corpus and upstream measurements before it has a comparable score. The local results below are real, but are not substituted for SNOMED / LOINC / RxNorm tests. Round 0 date: {report.referenceDate}.</p>
+    </section>
+    {report.audit && <section><h2>Current upstream coverage · {Object.values(report.audit.tests).filter((t:any)=>t.status==='pass').length}/20 preflights</h2><p>Local synthetic + R4 core content, not the complete clinical corpus. No load was applied in this audit. “Skip” is the upstream runner’s label, not a diagnosis that a route is absent.</p><details><summary>Show all 20 original checks</summary><div class="table-scroll"><table><thead><tr><th>Test</th><th>Result</th><th>Observed response</th></tr></thead><tbody>{Object.entries(report.audit.tests).map(([id,t]:[string,any])=><tr><td>{id}</td><td>{t.status}</td><td>{t.failed_checks?.[0]?.body?.issue?.[0]?.diagnostics||t.reason||'Original preflight passed'}</td></tr>)}</tbody></table></div></details></section>}
+    {report.groups.length === 0 && <p>No local raw runs are available. Recreate the benchmark data and run the documented local protocol; this page never invents measurements.</p>}
+    {report.groups.map((group:any)=><section id={group.id}>
+      <div class="group-header"><div><h2>{group.title}</h2><p>{group.cpu} · FHIR {group.fhirVersion} · {group.duration} windows · {group.warmup} warmup</p></div><span class="badge">Real measurements · no composite score</span></div>
+      <details><summary>Dataset and provenance</summary><p>{group.datasetLabel}</p><p>Source report: docs/{group.report}</p><p>Recorded: {group.startedAt}</p><code>Dataset SHA-256: {group.fingerprint}<br/>Harness SHA-256: {group.harness}</code><ul>{group.runs.map((run:any)=><li>{run.label}: {run.id} · version {run.version || 'not recorded'}</li>)}</ul></details>
+      <div class="cards">{[...new Set(group.runs[0].points.map((p:any)=>p.test))].map((test:any)=><article>
+        <h3>{names[test]||test}<span>{test}</span></h3>
+        <div class="chart-label">Throughput <small>higher is better</small></div><LocalChart option={option(group,test,'rps')} metric="rps" client:load />
+        <div class="chart-label">p99 latency <small>lower is better</small></div><LocalChart option={option(group,test,'p99')} metric="p99" client:load />
+        <details><summary>Exact recorded points</summary><div class="table-scroll"><table><thead><tr><th>Server</th><th>VU</th><th>RPS</th><th>p99, ms</th><th>Failed checks</th></tr></thead><tbody>{group.runs.flatMap((run:any)=>run.points.filter((p:any)=>p.test===test).map((p:any)=><tr><td>{run.label}</td><td>{p.vus}</td><td>{p.throughput.toFixed(1)}</td><td>{p.duration.p99.toFixed(3)}</td><td>{p.checks_fail}</td></tr>))}</tbody></table></div></details>
+      </article>)}</div>
+    </section>)}
+    <footer>Generated from local JSON artifacts at {report.generatedAt}. Historical repeats and limitations remain in the source reports; the charts show primary runs, not selected peaks.</footer>
+  </div>
+</Base>
+<style>
+  .composite-panel{padding:22px;background:#171c28;border:1px solid #3d4b66;border-radius:12px}.our-score{color:#4ade80;background:#183326}.server-version{display:block;color:#8995ad;font-size:10px;margin-top:4px}.score-note{font-size:12px}.local-report{max-width:1400px;margin:0 auto;padding:36px 24px 64px;color:#e1e6f0}.eyebrow{font-size:11px;letter-spacing:.14em;color:#4ade80;margin-bottom:12px}h1{font-size:36px;line-height:1.2;margin:0 0 12px}h2{font-size:23px;margin:0 0 8px}p{color:#a8b1c7;line-height:1.6}.intro{font-size:16px;max-width:850px}.links{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}.links a{padding:10px 14px;border:1px solid #343c50;border-radius:8px;color:#c5cddd;text-decoration:none}.links .active{border-color:#4ade80;color:#4ade80}aside{padding:18px 20px;background:#242112;border:1px solid #665520;border-radius:10px;color:#e4d496;line-height:1.6}aside strong{display:block}section{margin-top:40px}.group-header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:16px}.group-header p{margin:0}.badge{border:1px solid #2e5742;border-radius:20px;padding:6px 12px;color:#87d9aa;font-size:11px;white-space:nowrap}.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin-top:20px}article{min-width:0;padding:22px 16px;background:#171c28;border:1px solid #30384a;border-radius:12px}h3{font-size:17px;margin:0 0 20px;display:flex;justify-content:space-between;gap:12px}h3 span{font-size:11px;font-weight:400;color:#8d99b4}.chart-label{font-size:12px;color:#d5dcef;margin:12px 8px}.chart-label small{color:#8995ad;margin-left:8px}details{border:1px solid #30384a;border-radius:8px;padding:12px 14px;color:#a8b1c7;font-size:12px;overflow-wrap:anywhere}summary{cursor:pointer;color:#b6c1da}code{line-height:1.8;font-size:11px}li{margin:6px 0}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;margin-top:12px;font-size:11px}th,td{text-align:right;padding:8px;border-bottom:1px solid #30384a;white-space:nowrap}th:first-child,td:first-child{text-align:left}footer{margin-top:36px;font-size:12px;color:#8995ad;line-height:1.7}@media(max-width:900px){.cards{grid-template-columns:1fr}.group-header{align-items:flex-start;flex-direction:column}}@media(max-width:480px){.local-report{padding:24px 12px}h1{font-size:28px}article{padding:18px 8px}h3{font-size:15px}}
+</style>
