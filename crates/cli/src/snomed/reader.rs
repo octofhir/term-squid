@@ -191,10 +191,11 @@ pub(super) async fn copy_source(
         .map(|name| format!("{name} text NOT NULL"))
         .collect::<Vec<_>>()
         .join(",");
-    sqlx::query(&format!(
+    // Kind is a closed enum: both table and column names are static identifiers.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TEMP TABLE rf2_{} ({columns}, PRIMARY KEY(id)) ON COMMIT DROP",
         kind.name()
-    ))
+    )))
     .execute(&mut **tx)
     .await?;
     let (send, mut receive) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
@@ -315,7 +316,7 @@ fn read_source(
         send.blocking_send(chunk)
             .map_err(|_| anyhow::anyhow!("RF2 import cancelled"))?;
     }
-    let hash = format!("{:x}", sha.finalize());
+    let hash = hex::encode(sha.finalize());
     if hash != source.sha256 {
         bail!("RF2 {} checksum mismatch", kind.name());
     }

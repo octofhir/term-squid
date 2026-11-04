@@ -123,3 +123,26 @@ jobs:
           name: frontend-dist
           path: frontend/dist
           retention-days: 7
+
+  core-dependencies:
+    name: Independent core without transports or SQL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/core-consumer
+      - run: cargo run --manifest-path tests/core-consumer/Cargo.toml
+      - name: Guard library dependency boundary
+        run: |
+          python3 - <<'PY'
+          import re, subprocess
+          graph = subprocess.check_output([
+              "cargo", "tree", "--manifest-path", "tests/core-consumer/Cargo.toml",
+              "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
+          ], text=True)
+          forbidden = re.findall(r"^(?:tokio|reqwest|hyper|rustls|native-tls|openssl-sys|sqlx|sqlx-core|sqlx-postgres|regex|fuzzy-matcher) v.*", graph, re.M)
+          if forbidden:
+              raise SystemExit("Unexpected core dependencies: " + ", ".join(forbidden))
+          PY

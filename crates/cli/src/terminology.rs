@@ -1,3 +1,4 @@
+// Dynamic test DDL/search paths below use only generated test_<UUID> identifiers.
 //! Shared transactional concept/closure import for package and single-resource commands.
 use anyhow::{Context, Result};
 use sqlx::{Postgres, Transaction};
@@ -68,7 +69,7 @@ mod tests {
         let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
         let admin = PgPool::connect(&url).await.unwrap();
         let schema = format!("test_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .unwrap();
@@ -77,7 +78,7 @@ mod tests {
             .after_connect(move |c, _| {
                 let path = path.clone();
                 Box::pin(async move {
-                    sqlx::query(&path).execute(c).await?;
+                    sqlx::query(sqlx::AssertSqlSafe(path)).execute(c).await?;
                     Ok(())
                 })
             })
@@ -127,7 +128,7 @@ mod tests {
                 .unwrap();
         assert_eq!(count, 0);
         pool.close().await;
-        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await
             .unwrap();

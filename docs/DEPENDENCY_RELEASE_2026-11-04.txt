@@ -1,0 +1,41 @@
+Dependency patch release 0.1.3 — November 4, 2026
+
+Scope: published main (a016524), preserving the separate original checkout's
+uncommitted clinical/authentication work. Distribution remains Git and the
+existing CLI/server release channels; no new crates.io publication is introduced.
+
+Changes
+- Remove unused config and its format-reader dependencies: Config::from_env is
+  implemented locally and does not use that package.
+- Select Tokio capabilities in the actual binaries and SQLx PostgreSQL/migration
+  features explicitly. The reusable core still has no transport, Tokio or SQL.
+- Update private binary dependencies to SQLx 0.9, reqwest 0.13, tower-http 0.7,
+  indicatif 0.18, SHA-2 0.11 and thiserror 2. Preserve HTTP/2, system proxies,
+  charset decoding, the existing native TLS backend and OS certificate roots.
+  Do not enable reqwest 0.13's default Rustls/AWS-LC dependency stack.
+- Adapt SHA-2 output using the existing hex dependency family; fingerprints
+  remain lowercase SHA-256. SQLx 0.9 marks the already-audited dynamic statements
+  explicitly: search text remains bound, pagination is typed, and RF2 identifiers
+  come from the closed Kind enum. Dynamic test DDL uses generated UUID schemas.
+- Pin UCUM 0.9.3 with defaults disabled, retaining the existing libm math path.
+- Release workflows support a precommitted version (none). Fix CLI binaries
+  previously being compiled before their release version was calculated.
+
+Validation
+- 64/64 workspace tests pass, including all nineteen disposable PostgreSQL
+  scenarios and RF2 rollback/cancellation tests; no ignored test was skipped.
+- Strict Clippy, rustdoc, benchmark-harness correctness tests and pinned RustSec
+  audit pass. Existing assertions, migrations and freshness rules are unchanged.
+- 6,804 lookup/comparability adapter results are byte identical between UCUM
+  0.9.1 and 0.9.3: every atom, composed/invalid units, versions and size limits.
+- Actual local backend HTTP lookup/validation smoke: 4/4 positive/negative cases.
+- HTTPS R4 core download/extraction dry run succeeds with certificate validation:
+  all 2,458 terminology resources are recognized; no data is written by dry run.
+- CI independently builds a core consumer and rejects accidental SQL/HTTP/TLS,
+  Tokio, regex or fuzzy-search dependencies.
+
+This changes dependency/build structure. No clinical composite or throughput
+improvement is claimed. The documented unsupported terminology behavior remains
+explicit; no benchmark weights, fixtures, cache limits or pool settings changed.
+Raw logs, source snapshots and the disposable database live under the ignored
+.benchmarks/dependency-release directory and are excluded from Git.

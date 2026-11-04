@@ -46,7 +46,7 @@ impl InlineValueSet {
         }
         let digest = Sha256::digest(&bytes);
         let fingerprint: [u8; 32] = digest.into();
-        let anonymous = format!("urn:term-squid:inline:{digest:x}");
+        let anonymous = format!("urn:term-squid:inline:{}", hex::encode(fingerprint));
         let canonical = Canonical::parse(text("url")?.unwrap_or(&anonymous), business_version)?;
         if !resource.get("compose").is_some_and(Value::is_object) {
             return Err(AppError::BadRequest(
