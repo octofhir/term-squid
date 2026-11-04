@@ -1,4 +1,33 @@
-# Implement the branded public UI and authenticated administration
+# Continue the branded public UI and administration
+
+November 4, 2026: the first implementation is present. Read [the implementation report](UI_ADMIN_IMPLEMENTATION_REPORT.md), [FHIRsmith comparison](FHIRSMITH_UI_ADMIN_COMPARISON.md), `AGENTS.md` and the current Git diff before changing it. Preserve all uncommitted/untracked files. Do not restart the Solid-to-React migration or replace the actual UI kit with local components.
+
+The latest [R4 API implementation](API_IMPLEMENTATION_REPORT.md) covers all 70 declared inputs and passes **147 Rust/PostgreSQL tests** plus the unchanged harness. **23 production browser/API scenarios**, **29 harness tests** and **7/7 local gates** pass; the report contains evidence and exact limits. Apply `20261104000006_supplements`; the base UI/package reports remain the authority for authentication, upload formats, retention and Git UI-kit delivery.
+
+## Current implementation
+
+- React 19; Node 24.16.0 / pnpm 10.11.0; UI-kit Git SHA `5a17d7428e8da253fcd87375e45b41c89ff59997`, `packages/ui-kit`. Keep the package/lockfile and Vite/TypeScript alias fix together.
+- Anonymous overview/catalog/detail/version/JSON/projection pages and read-operation tools; separate protected `/admin` and `/api/admin`.
+- Argon2id bootstrap hash file, persistent HttpOnly sessions, Origin/CSRF enforcement, logout/revocation/expiry and global retry limits. No default password or external auth database.
+- `term-squid-ingestion` shared by HTTP/CLI. One-resource R4 JSON and bounded local R4 FHIR `.tgz` imports, bounded staging/jobs, immutable versions/idempotence, atomic resource/projection/job commit and generation freshness. Native RF2/LOINC stay on the existing CLI manifest path.
+- Migrations `20261103000004_admin` and `20261104000005_admin_package`; apply through CLI `migrate`. Frontend must build before compiling the embedded backend. CI artifact path is `crates/backend/static`.
+- New generated mascot and distribution sizes in `frontend/public/branding/`; licenses in `frontend/public/licenses/`.
+
+## Resume and verify
+
+1. Inspect Git status and read the report's validation/limitations. No commit/push/deploy is authorized by this checklist.
+2. Install frontend dependencies with `pnpm install --frozen-lockfile`; run typecheck/lint/unit tests and build before Cargo. A separate server-rs checkout is only a read-only design reference.
+3. Follow the report for administrator bootstrap and browser-visible Origin. For development, backend port 8081 is proxied by Vite on `http://127.0.0.1:5173`; use that Origin for admin requests. Never copy local test credentials into tracked files.
+4. Run workspace formatting/Clippy/tests including PostgreSQL, `bun test benchmarks`, and the embedded production browser driver. `benchmarks/ui_admin_smoke.py` requires an explicitly disposable loopback database, generated benchmark fixture package, release backend/CLI and Playwright Chromium. It kills a real import process to verify restart recovery.
+5. Preserve all seven local FHIR gates and the benchmark dashboard. Load-test only local servers. UI acceptance is not a new clinical score or proof of R5/R6 support.
+
+Local bounded R4 package ingestion is now implemented; read [PACKAGE_IMPORT_REPORT.md](PACKAGE_IMPORT_REPORT.md) before extending it. Remaining work includes package dependency resolution, Bundle/native multifile HTTP ingestion, richer content management and future authentication strategies. Keep unsupported workflows explicit. Prioritize only the next user-selected increment; do not silently resume engine/composite optimization while UI work is requested.
+
+## Original acceptance contract
+
+The original specification below is retained for reference; its descriptions of the starting Solid frontend and absence of auth APIs refer to the pre-implementation checkpoint.
+
+### Implement the branded public UI and authenticated administration
 
 Continue developing term-squid in the current repository. This is an explicitly selected UI/admin workstream. Implement and validate it; do not stop at a plan or a visual mockup. Communicate with the user in Russian; keep Git-facing code, comments, documentation and reports in English. Do not commit, push, publish a package or deploy without a new explicit request.
 

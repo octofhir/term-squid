@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    #[error("Invalid operation input: {1}")]
+    InvalidInput(StatusCode, String),
+
     #[error("Bad request: {0}")]
     BadRequest(String),
 }
@@ -53,6 +56,7 @@ impl IntoResponse for AppError {
             AppError::Terminology(_) | AppError::NativeValueSet => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "not-supported")
             }
+            AppError::InvalidInput(status, _) => (status, "Invalid operation input"),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, "Bad request"),
         };
 
@@ -60,10 +64,15 @@ impl IntoResponse for AppError {
             "resourceType": "OperationOutcome",
             "issue": [{"severity": "error", "code": match status {
                 StatusCode::NOT_FOUND => "not-found", StatusCode::BAD_REQUEST => "invalid",
-                StatusCode::UNPROCESSABLE_ENTITY => "not-supported", _ => "exception"
+                StatusCode::UNPROCESSABLE_ENTITY => "not-supported", StatusCode::PAYLOAD_TOO_LARGE => "too-costly", StatusCode::UNSUPPORTED_MEDIA_TYPE | StatusCode::NOT_ACCEPTABLE | StatusCode::METHOD_NOT_ALLOWED => "not-supported", _ => "exception"
             }, "diagnostics": if status.is_server_error() { error_message.to_string() } else { self.to_string() }}],
         }));
 
-        (status, body).into_response()
+        (
+            status,
+            [(axum::http::header::CONTENT_TYPE, "application/fhir+json")],
+            body,
+        )
+            .into_response()
     }
 }

@@ -10,6 +10,8 @@ name = "term-squid-cli"
 path = "src/main.rs"
 
 [dependencies]
+term-squid-ingestion = { path = "../ingestion" }
+argon2 = "0.5"
 term-squid-core = { path = "../core" }
 # CLI
 clap.workspace = true

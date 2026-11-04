@@ -10,9 +10,12 @@ name = "backend"
 path = "src/main.rs"
 
 [dependencies]
+term-squid-ingestion = { path = "../ingestion" }
+argon2 = "0.5"
 term-squid-core = { path = "../core" }
 # Web Framework
 axum.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
@@ -23,6 +26,9 @@ sqlx.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_html_form = "=0.2.8"
+form_urlencoded = "1"
+mime = "0.3"
 
 # Logging
 tracing.workspace = true
@@ -51,3 +57,5 @@ mime_guess.workspace = true
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
+tar.workspace = true
+flate2.workspace = true

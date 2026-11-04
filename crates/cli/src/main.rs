@@ -17,7 +17,7 @@ struct Cli {
 
     /// Database connection URL
     #[arg(long)]
-    database_url: String,
+    database_url: Option<String>,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(short = 'l', long, default_value = "info")]
@@ -26,6 +26,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Read a password from stdin and print an Argon2id PHC hash (no database required)
+    HashAdminPassword,
     /// Apply the repository database migrations before starting the server
     Migrate,
     /// Import a locally supplied complete SNOMED RF2 Snapshot using a checksummed manifest
@@ -119,15 +121,39 @@ async fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
+    if matches!(cli.command, Commands::HashAdminPassword) {
+        use argon2::{
+            password_hash::{rand_core::OsRng, SaltString},
+            Argon2, PasswordHasher,
+        };
+        use std::io::Read;
+        let mut password = String::new();
+        std::io::stdin().take(4097).read_to_string(&mut password)?;
+        let password = password.trim_end_matches(['\r', '\n']);
+        anyhow::ensure!(
+            (12..=4096).contains(&password.len()),
+            "Password must be 12..4096 bytes"
+        );
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|_| anyhow::anyhow!("Password hashing failed"))?;
+        println!("{hash}");
+        return Ok(());
+    }
     // Connect to database
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
-        .connect(&cli.database_url)
+        .connect(
+            &cli.database_url
+                .ok_or_else(|| anyhow::anyhow!("--database-url is required"))?,
+        )
         .await?;
 
     tracing::info!("Connected to database");
 
     match cli.command {
+        Commands::HashAdminPassword => unreachable!(),
         Commands::Migrate => {
             sqlx::migrate!("../backend/migrations").run(&pool).await?;
             println!("Repository migrations applied");

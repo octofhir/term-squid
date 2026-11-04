@@ -57,6 +57,42 @@ pub trait TerminologyStore: Send + Sync {
     async fn search_concept_maps(&self, params: &SearchParams)
         -> Result<Vec<ConceptMap>, AppError>;
 
+    async fn expand_options(
+        &self,
+        request: super::ValueSetRequest<'_>,
+        options: &super::ExpansionOptions,
+        filter: Option<&str>,
+        offset: i64,
+        count: i64,
+    ) -> Result<super::ExpansionPage, AppError>;
+
+    async fn lookup_details(
+        &self,
+        request: super::LookupRequest<'_>,
+    ) -> Result<super::LookupAnswer, AppError>;
+
+    async fn translate_context(
+        &self,
+        request: super::TranslationRequest<'_>,
+    ) -> Result<Vec<super::TranslationAnswer>, AppError>;
+
+    async fn validate_context(
+        &self,
+        target: super::ValidationTarget<'_>,
+        candidates: &[super::ValidationCandidate<'_>],
+        allow_abstract: bool,
+        options: &super::ValidationOptions,
+    ) -> Result<super::ValidationAnswer, AppError>;
+
+    async fn validate_candidates(
+        &self,
+        target: super::ValidationTarget<'_>,
+        candidates: &[super::ValidationCandidate<'_>],
+        allow_abstract: bool,
+    ) -> Result<super::ValidationAnswer, AppError>;
+
+    async fn code_system_capabilities(&self) -> Result<Vec<Value>, AppError>;
+
     // Statistics
     async fn count_code_systems(&self) -> Result<i64, AppError>;
     async fn count_value_sets(&self) -> Result<i64, AppError>;

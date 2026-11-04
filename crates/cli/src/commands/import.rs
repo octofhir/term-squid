@@ -87,7 +87,7 @@ pub async fn run(
     Ok(())
 }
 
-async fn import_resources(pool: &PgPool, resources: Vec<FhirResource>) -> Result<()> {
+async fn import_resources(pool: &PgPool, mut resources: Vec<FhirResource>) -> Result<()> {
     let pb = ProgressBar::new(resources.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -98,6 +98,35 @@ async fn import_resources(pool: &PgPool, resources: Vec<FhirResource>) -> Result
 
     let mut tx = pool.begin().await?;
 
+    let mut identities: Vec<_> = resources
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.resource_type.as_str(),
+                "CodeSystem" | "ValueSet" | "ConceptMap"
+            )
+        })
+        .filter_map(|r| {
+            r.url
+                .as_deref()
+                .map(|url| (r.resource_type.as_str(), url, r.content["version"].as_str()))
+        })
+        .collect();
+    identities.sort();
+    for (kind, url, version) in identities {
+        term_squid_ingestion::lock_identity(&mut tx, kind, url, version).await?;
+    }
+    resources.sort_by_key(|r| {
+        if r.resource_type == "CodeSystem" {
+            if r.content["content"] == "supplement" {
+                1
+            } else {
+                0
+            }
+        } else {
+            2
+        }
+    });
     let mut imported = 0;
     let mut skipped = 0;
     let mut errors = 0;
@@ -170,6 +199,8 @@ async fn import_code_system(
     let name = resource.content.get("name").and_then(|v| v.as_str());
     let title = resource.content.get("title").and_then(|v| v.as_str());
 
+    term_squid_ingestion::lock_identity(tx, &resource.resource_type, url, version).await?;
+
     // Check if already exists
     let exists: bool = if let Some(v) = version {
         sqlx::query_scalar(
@@ -226,6 +257,8 @@ async fn import_value_set(
     let name = resource.content.get("name").and_then(|v| v.as_str());
     let title = resource.content.get("title").and_then(|v| v.as_str());
 
+    term_squid_ingestion::lock_identity(tx, &resource.resource_type, url, version).await?;
+
     // Check if already exists
     let exists: bool = if let Some(v) = version {
         sqlx::query_scalar(
@@ -279,6 +312,8 @@ async fn import_concept_map(
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
+
+    term_squid_ingestion::lock_identity(tx, &resource.resource_type, url, version).await?;
 
     // Check if already exists
     let exists: bool = if let Some(v) = version {

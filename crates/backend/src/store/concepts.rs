@@ -14,6 +14,7 @@ type Key = (Canonical, Option<Uuid>);
 
 #[derive(sqlx::FromRow)]
 struct Metadata {
+    url: String,
     native_provider: Option<String>,
     id: Uuid,
     name: Option<String>,
@@ -32,7 +33,7 @@ struct RawConcept {
 }
 enum Snapshot {
     Prepared {
-        metadata: Metadata,
+        metadata: Box<Metadata>,
         concepts: PreparedConcepts,
     },
     Sql,
@@ -44,6 +45,7 @@ impl Snapshot {
             Self::Prepared { metadata, concepts } => {
                 let found = concepts.resolve(code, &observed.key_a);
                 Read::Resolved(ResolvedConcept {
+                    url: metadata.url.clone(),
                     native_provider: metadata.native_provider.clone(),
                     name: metadata.name.clone(),
                     version: metadata.version.clone(),
@@ -59,6 +61,8 @@ impl Snapshot {
         }
     }
 }
+// Keep the bounded payload inline: boxing it would allocate on every warm read.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Read {
     Missing,
     Resolved(ResolvedConcept),
@@ -136,7 +140,7 @@ impl ConceptPlans {
             tx.commit().await?;
             return Ok(plan.resolve(code, &observed));
         }
-        let metadata = sqlx::query_as::<_,Metadata>("SELECT id,name,version,native_provider,CASE WHEN native_provider IS NOT NULL THEN 'complete' WHEN octet_length(content_mode)<=65536 THEN content_mode END AS content_mode,case_sensitive,(COALESCE(octet_length(name),0)+COALESCE(octet_length(version),0)+COALESCE(octet_length(content_mode),0)+COALESCE(octet_length(native_provider),0))::bigint AS bytes FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+        let metadata = sqlx::query_as::<_,Metadata>("SELECT id,url,name,version,native_provider,CASE WHEN native_provider IS NOT NULL THEN 'complete' WHEN octet_length(content_mode)<=65536 THEN content_mode END AS content_mode,case_sensitive,(octet_length(url)+COALESCE(octet_length(name),0)+COALESCE(octet_length(version),0)+COALESCE(octet_length(content_mode),0)+COALESCE(octet_length(native_provider),0))::bigint AS bytes FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
         let Some(metadata) = metadata else {
             tx.commit().await?;
@@ -158,6 +162,7 @@ impl ConceptPlans {
         let (_admission, snapshot, charge) =
             tokio::task::spawn_blocking(move || -> Result<_, AppError> {
                 let base_charge = 8192
+                    + metadata.url.capacity()
                     + key_bytes * 8
                     + metadata.name.as_ref().map_or(0, String::capacity)
                     + metadata.version.as_ref().map_or(0, String::capacity)
@@ -190,7 +195,13 @@ impl ConceptPlans {
                     if charge > CACHE_BYTES {
                         (Snapshot::Sql, base_charge)
                     } else {
-                        (Snapshot::Prepared { metadata, concepts }, charge)
+                        (
+                            Snapshot::Prepared {
+                                metadata: Box::new(metadata),
+                                concepts,
+                            },
+                            charge,
+                        )
                     }
                 } else {
                     (Snapshot::Sql, base_charge)

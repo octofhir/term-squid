@@ -11,8 +11,9 @@ default:
 setup:
     @echo "Setting up development environment..."
     docker-compose up -d postgres
-    cargo build
-    cd frontend && pnpm install
+    cd frontend && pnpm install --frozen-lockfile
+    cd frontend && pnpm run build
+    cargo build --locked
     @echo "✓ Setup complete!"
 
 # Start PostgreSQL database
@@ -39,14 +40,12 @@ db-check:
     psql "postgresql://termserver:dev_password@localhost:5433/termserver" -c "SELECT version();"
 
 # Build the entire project
-build:
-    cargo build
-    cd frontend && pnpm run build
+build: frontend-build
+    cargo build --locked
 
 # Build in release mode
-build-release:
-    cd frontend && pnpm run build
-    cargo build --release
+build-release: frontend-build
+    cargo build --locked --release
 
 # Run the backend server
 run:
@@ -220,7 +219,7 @@ dev:
 
 # Frontend: install dependencies
 frontend-install:
-    cd frontend && pnpm install
+    cd frontend && pnpm install --frozen-lockfile
 
 # Frontend: run dev server with HMR
 frontend-dev:
@@ -289,7 +288,7 @@ bench-migrate:
 bench-setup: bench-db bench-migrate bench-seed
 
 # Run the release server in the foreground on the benchmark port
-bench-server:
+bench-server: frontend-install frontend-build
     DATABASE_URL="{{bench_database_url}}" SERVER_HOST=127.0.0.1 SERVER_PORT=18081 RUST_LOG=warn CARGO_TARGET_DIR=.benchmarks/target cargo run --release --bin backend
 
 # Stop benchmark containers while preserving their data

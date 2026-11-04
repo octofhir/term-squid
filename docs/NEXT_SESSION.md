@@ -1,6 +1,8 @@
 # Resume development on another device
 
-For the explicitly selected branded UI / public-versus-admin workstream, follow [NEXT_SESSION_UI.md](NEXT_SESSION_UI.md). It covers the OctoFHIR design reference, reproducible UI-kit reuse, standalone admin authentication and functional protected import flows. The engine/composite continuation below remains a separate workstream; preserve its existing changes and measurements.
+The user-selected R4 API implementation now covers all 70 declared inputs of six operations, bounded supplements, public read workflows and standalone administration. Read [API_IMPLEMENTATION_REPORT.md](API_IMPLEMENTATION_REPORT.md), [API_REQUIREMENTS.md](API_REQUIREMENTS.md) and [R4_API_CONTRACT.json](R4_API_CONTRACT.json). The full Rust/PostgreSQL checkpoint passes 147 tests; 23 embedded production browser/API scenarios, 29 harness tests and seven unchanged local gates also pass; exact delivery evidence is recorded in the report. Apply migration `20261104000006_supplements` and build frontend before RustEmbed. Preserve provider/registry bounds and do not silently switch to performance work without the next user-selected priority.
+
+The branded UI/admin and local-package increments remain implemented; see [the UI report](UI_ADMIN_IMPLEMENTATION_REPORT.md), [the package report](PACKAGE_IMPORT_REPORT.md) and [NEXT_SESSION_UI.md](NEXT_SESSION_UI.md) when changing those areas. Keep the UI live on 5173 when available. The engine/composite continuation below is a separate workstream; preserve its existing changes and measurements.
 
 ## Goal and current state
 
@@ -17,6 +19,8 @@ Read in order:
 5. `docs/HTS_FEATURE_GAPS.md` and the relevant performance report before changing the measured engine.
 
 Implemented:
+
+- Branded React 19 public browsing and separate authenticated administration, fixed Git UI-kit delivery, shared transactional JSON/package ingestion and protected persistent import jobs. See [the package report](PACKAGE_IMPORT_REPORT.md); apply migrations through `20261104000005_admin_package`; build frontend before RustEmbed. See the UI report for bootstrap/configuration, exact support limits and validation. No default password or OctoFHIR backend/database dependency.
 
 - Prepared lookup/validation, finite ValueSets, ConceptMaps and hierarchies with bounded retention and fresh cross-process generation observations. No TTL/stale-error fallback; pool default 32.
 - Inline ValueSet expansion/membership through the finite engine, content-fingerprinted request-local keys, no persistence and explicit unsupported input errors.

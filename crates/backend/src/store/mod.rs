@@ -1,3 +1,14 @@
+mod capabilities;
+mod compose_loader;
+mod expansion;
+pub use expansion::ExpansionPage;
+mod expansion_options;
+mod selection;
+mod supplements;
+pub use expansion_options::ExpansionOptions;
+mod lookup;
+pub mod options;
+pub use lookup::{LookupAnswer, LookupRequest};
 mod concepts;
 mod generation;
 mod hierarchy;
@@ -5,6 +16,10 @@ mod inline;
 mod postgres;
 mod subsumption;
 mod traits;
+mod translation;
+mod validation;
+pub use translation::{TranslationAnswer, TranslationCode, TranslationRequest};
+pub use validation::{ValidationAnswer, ValidationCandidate, ValidationOptions, ValidationTarget};
 
 pub use postgres::PostgresStore;
 pub use traits::TerminologyStore;

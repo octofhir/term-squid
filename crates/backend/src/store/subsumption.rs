@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 #[derive(sqlx::FromRow)]
 struct Row {
+    url: String,
+    version: Option<String>,
     native_provider: Option<String>,
     hierarchy_meaning: Option<String>,
     code_a: Option<String>,
@@ -40,6 +42,8 @@ pub(super) async fn resolve(
             )));
         }
         Ok(ResolvedSubsumption {
+            url: row.url,
+            version: row.version,
             hierarchy_meaning: row.hierarchy_meaning,
             code_a: row.code_a,
             code_b: row.code_b,

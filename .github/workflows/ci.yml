@@ -13,6 +13,7 @@ env:
 jobs:
   test:
     name: Test
+    needs: frontend
     runs-on: ubuntu-latest
 
     services:
@@ -33,6 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Clear embedded build output
+        run: rm -rf crates/backend/static && mkdir -p crates/backend/static
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: crates/backend/static
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,14 +60,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features postgres || true
-
       - name: Run database migrations
-        run: |
-          cd crates/backend
-          sqlx database create
-          sqlx migrate run
+        run: cargo run --locked --bin term-squid-cli -- --database-url "$DATABASE_URL" migrate
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/termsquid_test
 
@@ -66,13 +69,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
       - name: Run tests
-        run: cargo test --workspace --verbose -- --include-ignored
+        run: cargo test --locked --workspace --verbose -- --include-ignored
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/termsquid_test
           TERM_SQUID_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/termsquid_test
@@ -102,15 +105,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24.16.0'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10.11.0
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+
+      - name: Check frontend
+        run: pnpm run lint && pnpm run test && pnpm run typecheck
         working-directory: frontend
 
       - name: Build frontend
@@ -120,6 +127,64 @@ jobs:
       - name: Upload frontend build
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-dist
-          path: frontend/dist
+          name: frontend-static
+          path: crates/backend/static
+          retention-days: 7
+
+  browser:
+    name: Embedded production UI
+    needs: frontend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: termsquid_ui_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clear embedded build output
+        run: rm -rf crates/backend/static && mkdir -p crates/backend/static
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: crates/backend/static
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+      - name: Build embedded release after frontend
+        run: cargo build --locked --release --bin backend --bin term-squid-cli
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Generate local fixtures
+        run: bun benchmarks/bench.ts fixtures
+      - name: Test production application and restart recovery
+        run: python3 benchmarks/ui_admin_smoke.py --database-url postgres://postgres:postgres@127.0.0.1:5432/termsquid_ui_test
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-admin-browser-evidence
+          path: |
+            .benchmarks/ui-admin/screenshots
+            .benchmarks/ui-admin/browser-results
           retention-days: 7

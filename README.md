@@ -1,6 +1,6 @@
 <p align="center"><img src=".github/banner.png" alt="octo/term-squid — A FHIR terminology server on Rust and PostgreSQL" width="100%"></p>
 
-<p align="center"><b>A standalone FHIR terminology server under development, on Rust (Axum), PostgreSQL and a SolidJS UI.</b></p>
+<p align="center"><b>A standalone FHIR terminology server under development, on Rust (Axum), PostgreSQL and a React UI.</b></p>
 
 <p align="center">
   <a href="https://github.com/octofhir/term-squid/actions/workflows/ci.yml"><img src="https://github.com/octofhir/term-squid/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,29 +9,31 @@
 
 ## Status
 
-Prototype: backend API, CLI and UI are present, but terminology semantics are incomplete. R4 is the first conformance target; R5/R6 routes currently share the implementation and do not establish support for those releases.
+The standalone R4 product API, branded public UI and authenticated administration are implemented. The six declared terminology operations cover all 70 pinned top-level R4 inputs, with explicit provider, registry and resource limits. See the [API implementation report](docs/API_IMPLEMENTATION_REPORT.md) and [requirements matrix](docs/API_REQUIREMENTS.md) for current evidence. R5/R6 aliases do not establish support for those releases.
 
 See the [product development plan](docs/PRODUCT_PLAN.md) and [local benchmark instructions](benchmarks/README.md). Known correctness gaps are tracked there and exposed by semantic benchmark preflight.
 
 ## Features
 
 - **FHIR routes** - R4, R5 and R6 route groups; release-specific conformance is pending
-- **Read-only content API** - Resource search/read and GET/POST terminology operations; content management through CLI
+- **Read-only content API** - Resource search/read and GET/POST terminology operations; content management through CLI and protected administrator import jobs
 - ✅ **CLI Resource Creation** - Create CodeSystem, ValueSet, ConceptMap via command-line
-- **FHIR Operations** - $lookup, $validate-code, $subsumes, $expand, $translate handlers; semantic coverage is under development
+- **FHIR Operations** - $lookup, CodeSystem/ValueSet $validate-code, $subsumes, $expand and $translate, including typed inputs, dates/languages, bounded inline resources and version/context options
 - ✅ **PostgreSQL Storage** - Efficient storage with JSONB and full-text search
 - ✅ **Package Loader CLI** - Import official FHIR packages from packages.fhir.org
 - **Clinical Terminology Import** - Import tooling exists; complete LOINC/UCUM provider behavior is planned
-- ✅ **Modern Web UI** - SolidJS frontend with Linear-inspired design
+- ✅ **Modern Web UI** - React 19 with the actual OctoFHIR UI kit, public catalogs and protected administration
 - ✅ **Embedded Deployment** - Single binary with embedded frontend assets
 - ✅ **Async-first Architecture** - High-performance async Rust with Tokio
+
+See [UI/admin setup, bootstrap, supported imports and validation](docs/UI_ADMIN_IMPLEMENTATION_REPORT.md). Administration ships without a default password.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust 1.75+
-- Node.js 20+ with pnpm
+- Current stable Rust (locally verified with 1.99.0)
+- Node.js 24.16.0 with pnpm 10.11.0 (pinned)
 - PostgreSQL 16+
 - Docker (optional but recommended)
 - [just](https://github.com/casey/just) command runner (optional)
@@ -55,7 +57,7 @@ Or manually:
 docker-compose up -d postgres
 
 # Install frontend dependencies
-cd frontend && pnpm install && cd ..
+cd frontend && pnpm install --frozen-lockfile && pnpm run build && cd ..
 
 # Build project
 cargo build
@@ -162,7 +164,7 @@ term-squid/
 │       ├── Cargo.toml
 │       └── src/
 │           └── main.rs
-└── frontend/                     # SolidJS UI
+└── frontend/                     # React UI
     ├── package.json
     ├── vite.config.ts            # Configured to output to backend/static
     └── src/
@@ -197,12 +199,14 @@ Requires Bun, k6, Docker Compose and sqlx-cli alongside Rust. The [benchmark gui
 ### Base URLs
 
 - R4: `http://localhost:8081/r4`
-- R5: `http://localhost:8081/r5` (conformance pending)
-- R6: `http://localhost:8081/r6` (conformance pending)
+- R5: `http://localhost:8081/r5` (experimental R4 alias; no verified R5 adapter)
+- R6: `http://localhost:8081/r6` (experimental R4 alias; no verified R6 adapter)
+
+The current [R4 requirements matrix](docs/API_REQUIREMENTS.md) separates implemented inputs from unsupported semantics. Lookup and CodeSystem/ValueSet validation accept single POST Coding inputs with checked business versions and instance context; malformed requests return FHIR OperationOutcome. See [examples, limits and evidence](docs/API_CODING_REPORT.md). This does not establish full FHIR conformance.
 
 ### Security Model
 
-Content is managed through CLI and package imports. Resource search/read uses GET. Terminology operations also accept POST Parameters requests; POST does not imply resource creation. Resource CRUD is not exposed.
+Content is managed through CLI and protected `/admin` imports. The browser accepts one R4 terminology JSON resource or a bounded local R4 FHIR `.tgz` package with atomic all-resource activation; see [package support and limits](docs/PACKAGE_IMPORT_REPORT.md). Resource search/read uses GET. Terminology operations also accept POST Parameters requests; POST does not imply resource creation. Resource CRUD is not exposed.
 
 ### REST Endpoints
 
@@ -514,7 +518,7 @@ just db-reset
 ```bash
 # Clean and rebuild
 just clean
-cd frontend && pnpm install
+just frontend-install
 just build
 ```
 

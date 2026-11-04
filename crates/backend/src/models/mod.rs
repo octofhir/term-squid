@@ -72,6 +72,7 @@ pub struct SearchParams {
 /// One bounded row for lookup/validation; deliberately excludes the resource JSON.
 #[derive(Debug, sqlx::FromRow)]
 pub struct ResolvedConcept {
+    pub url: String,
     pub native_provider: Option<String>,
     pub name: Option<String>,
     pub version: Option<String>,
@@ -85,6 +86,8 @@ pub struct ResolvedConcept {
 /// System metadata, normalized codes and hierarchy resolved in one database snapshot.
 #[derive(Debug, sqlx::FromRow)]
 pub struct ResolvedSubsumption {
+    pub url: String,
+    pub version: Option<String>,
     pub hierarchy_meaning: Option<String>,
     pub code_a: Option<String>,
     pub code_b: Option<String>,

@@ -191,6 +191,30 @@ async fn loinc_primary_reads_preserve_numeric_and_unloaded_domain_semantics() {
         .await;
         assert_eq!(status, 200, "{body}");
         assert_context(&body, "2.82", &format!("Generated 2.82 {index}"));
+        for operation in ["$lookup", "$validate-code"] {
+            let mut parameters = vec![
+                json!({"name":"coding","valueCoding":{"system":LOINC,"version":"2.81","code":code}}),
+            ];
+            if operation == "$validate-code" {
+                parameters.push(json!({"name":"url","valueUri":LOINC}));
+            }
+            let (status, body) = request(
+                &app,
+                "POST",
+                &format!("/r4/CodeSystem/{operation}"),
+                json!({"resourceType":"Parameters","parameter":parameters}),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(parameter(&body, "version")["valueString"], "2.81");
+            assert_eq!(
+                parameter(&body, "display")["valueString"],
+                format!("Generated 2.81 {index}")
+            );
+            if operation == "$validate-code" {
+                assert_result(&body, true);
+            }
+        }
         let (status, body) = implicit(&app, code, vec![]).await;
         assert_eq!(status, 200, "{body}");
         assert_context(&body, "2.82", &format!("Generated 2.82 {index}"));

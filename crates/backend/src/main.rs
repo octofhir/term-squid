@@ -1,4 +1,6 @@
+mod admin;
 mod api;
+mod catalog;
 mod config;
 mod database;
 mod error;
@@ -53,16 +55,33 @@ async fn main() -> Result<()> {
     tracing::info!("Database connection verified");
 
     // Create store
-    let store: Arc<dyn TerminologyStore> = Arc::new(PostgresStore::new(pool));
+    let store: Arc<dyn TerminologyStore> = Arc::new(PostgresStore::new(pool.clone()));
     tracing::info!("PostgreSQL store initialized");
 
     // Build application router with embedded static files
-    let app = api::create_router(store).fallback(static_handler).layer(
-        tower::ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(CompressionLayer::new())
-            .layer(CorsLayer::permissive()),
-    );
+    let admin_config = admin::AdminConfig::from_env().unwrap_or_else(|error| {
+        tracing::error!(%error, "Administration configuration invalid; public browsing remains available");
+        None
+    });
+    let admin_pool = database::pool_options(4).connect_lazy(&config.database_url)?;
+    let admin_router = match admin::router(admin_pool.clone(), admin_config).await {
+        Ok(router) => router,
+        Err(error) => {
+            tracing::error!(%error, "Administration unavailable; public browsing remains available");
+            admin::router(admin_pool, None).await?
+        }
+    };
+    let public = api::create_router(store)
+        .merge(catalog::router(pool))
+        .layer(CorsLayer::permissive());
+    let app = public
+        .nest("/api/admin", admin_router)
+        .fallback(static_handler)
+        .layer(
+            tower::ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(CompressionLayer::new()),
+        );
 
     // Start server
     let listener = tokio::net::TcpListener::bind(&config.bind_address()).await?;
@@ -76,6 +95,16 @@ async fn main() -> Result<()> {
 // Handler for serving embedded static files
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
+    if ["api", "r4", "r5", "r6"]
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error":{"message":"Unknown API endpoint"}})),
+        )
+            .into_response();
+    }
 
     // If the path is empty or is a known SPA route, serve index.html
     if path.is_empty() || !path.contains('.') {
@@ -94,7 +123,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                 .body(Body::from(content.data))
                 .unwrap()
         }
-        None => serve_index_html(),
+        None => (StatusCode::NOT_FOUND, "Asset not found").into_response(),
     }
 }
 

@@ -2,10 +2,14 @@
 mod concepts;
 pub mod loinc;
 pub mod snomed;
+pub mod supplements;
 pub mod ucum;
 pub use concepts::{PreparedConcepts, ProjectedConcept};
 mod translation;
-pub use translation::{PreparedConceptMap, TranslationMatch};
+pub use translation::{
+    PreparedConceptMap, ResolvedTranslation, TranslationContinuation, TranslationDependency,
+    TranslationMatch, TranslationProduct, TranslationResolution, VersionedTranslationMatch,
+};
 mod hierarchy;
 pub use hierarchy::{
     HierarchyConcept, HierarchyMatch, PreparedHierarchy, MAX_HIERARCHY_RELATIONSHIPS,
@@ -66,6 +70,8 @@ pub struct Concept {
     pub code: String,
     pub display: Option<String>,
     pub definition: Option<String>,
+    #[serde(default)]
+    pub designation: Vec<serde_json::Value>,
     #[serde(default)]
     pub property: Vec<Property>,
     #[serde(default)]

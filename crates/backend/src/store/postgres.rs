@@ -11,7 +11,7 @@ use uuid::Uuid;
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
-    native_reads: tokio::sync::Semaphore,
+    native_reads: std::sync::Arc<tokio::sync::Semaphore>,
     value_set_requests: tokio::sync::Semaphore,
     hierarchies: super::hierarchy::HierarchyPlans,
     concepts: super::concepts::ConceptPlans,
@@ -88,7 +88,7 @@ impl PostgresStore {
         Self {
             generations: super::generation::GenerationReads::new(pool.clone()),
             pool,
-            native_reads: tokio::sync::Semaphore::new(4),
+            native_reads: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
             value_set_requests: tokio::sync::Semaphore::new(64),
             hierarchies: super::hierarchy::HierarchyPlans::default(),
             concepts: super::concepts::ConceptPlans::default(),
@@ -234,21 +234,26 @@ impl PostgresStore {
             tx.commit().await?;
             return Ok(plan);
         }
-        let row: Option<Option<sqlx::types::Json<serde_json::Value>>> = sqlx::query_scalar(
-            "SELECT CASE WHEN octet_length(content::text) <= 33554432 THEN content END FROM concept_maps WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+        let row: Option<(String,Option<String>,Option<sqlx::types::Json<serde_json::Value>>)> = sqlx::query_as(
+            "SELECT url,version,CASE WHEN octet_length(content::text) <= 33554432 THEN content END FROM concept_maps WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
-        let content = row
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "ConceptMap {} version {:?} not found",
-                    root.url, root.version
-                ))
-            })?
+        let (selected_url, selected_version, content) = row.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "ConceptMap {} version {:?} not found",
+                root.url, root.version
+            ))
+        })?;
+        let content = content
             .ok_or_else(|| AppError::BadRequest("ConceptMap input exceeds 32 MiB".into()))?
             .0;
         tx.commit().await?;
         let (_admission, plan) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-            let plan = std::sync::Arc::new(term_squid_core::PreparedConceptMap::prepare(&content)?);
+            let plan =
+                std::sync::Arc::new(term_squid_core::PreparedConceptMap::prepare_with_identity(
+                    &content,
+                    &selected_url,
+                    selected_version.as_deref(),
+                )?);
             Ok((admission, plan))
         })
         .await
@@ -278,20 +283,15 @@ impl PostgresStore {
         id: Option<Uuid>,
     ) -> Result<Option<ResolvedConcept>, AppError> {
         // A missing concept still returns system metadata, distinguishing unknown content.
-        Ok(sqlx::query_as::<_, ResolvedConcept>(r#"
-            SELECT s.native_provider, s.name, s.version, CASE WHEN s.native_provider IS NOT NULL THEN 'complete' ELSE s.content_mode END AS content_mode, c.code, c.display, c.definition, c.properties
-            FROM (SELECT id, name, version, content_mode, case_sensitive, native_provider FROM code_systems
-                  WHERE ($4::uuid IS NOT NULL AND id = $4) OR ($4::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2))
-                  ORDER BY updated_at DESC, id LIMIT 1) s
-            LEFT JOIN LATERAL (
-                SELECT code, display, definition, properties FROM concepts
-                WHERE code_system_id = s.id AND
-                    ((s.case_sensitive AND code = $3) OR
-                     (NOT s.case_sensitive AND lower(code) = lower($3)))
-                LIMIT 1
-            ) c ON true
-        "#).bind(url).bind(version).bind(code).bind(id)
-            .fetch_optional(&self.pool).await?)
+        Ok(
+            sqlx::query_as::<_, ResolvedConcept>(include_str!("concept_resolution.sql"))
+                .bind(url)
+                .bind(version)
+                .bind(code)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
     async fn subsumption_row(
         &self,
@@ -312,8 +312,7 @@ impl PostgresStore {
         system_context: Option<(&str, &str)>,
         inline: Option<super::inline::InlineValueSet>,
     ) -> Result<ExpandedValueSet, AppError> {
-        use std::collections::BTreeSet;
-        use term_squid_core::{Canonical, Compose, PreparedSystem, Snapshot, MAX_RESOURCES};
+        use term_squid_core::Canonical;
         let root = inline
             .as_ref()
             .map(|v| v.canonical.clone())
@@ -348,107 +347,18 @@ impl PostgresStore {
             tx.commit().await?;
             return Ok(result);
         }
-        let mut snapshot = Snapshot::default();
-        let mut raw_systems = std::collections::BTreeMap::new();
-        let mut bytes_remaining: i64 = 32 * 1024 * 1024;
-        let mut pending = vec![root.clone()];
-        let mut seen = BTreeSet::new();
-        let mut base_resource = None;
-        let mut inline = inline;
-        while let Some(key) = pending.pop() {
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            if seen.len() + raw_systems.len() > MAX_RESOURCES {
-                return Err(AppError::BadRequest(
-                    "Compose resource limit exceeded".into(),
-                ));
-            }
-            if term_squid_core::snomed::implicit(&key)?.is_some()
-                || term_squid_core::loinc::implicit(&key)?.is_some()
-            {
-                return Err(AppError::NativeValueSet);
-            }
-            let resource = if key == root && inline.is_some() {
-                let inline = inline.take().expect("Inline root is present");
-                bytes_remaining -= inline.bytes as i64;
-                inline.resource
-            } else {
-                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64)> = sqlx::query_as(
-                "SELECT CASE WHEN octet_length(content::text) <= $4 THEN content END, octet_length(content::text)::bigint FROM value_sets WHERE ($3::uuid IS NOT NULL AND id = $3) OR ($3::uuid IS NULL AND url = $1 AND ($2::text IS NULL OR version = $2)) ORDER BY updated_at DESC, id LIMIT 1")
-                .bind(&key.url).bind(&key.version).bind(if key == root { id } else { None }).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
-                let row = row.ok_or_else(|| {
-                    AppError::NotFound(format!(
-                        "ValueSet {} version {:?} not found",
-                        key.url, key.version
-                    ))
-                })?;
-                bytes_remaining -= row.1;
-                row.0
-                    .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
-                    .0
-            };
-            if key == root {
-                base_resource = Some(resource.clone());
-            }
-            let compose: Compose =
-                serde_json::from_value(resource.get("compose").cloned().ok_or_else(|| {
-                    AppError::BadRequest("ValueSet without compose is not supported".into())
-                })?)
-                .map_err(|e| AppError::BadRequest(format!("Invalid compose: {e}")))?;
-            let (systems, imports) = compose.references()?;
-            pending.extend(imports);
-            for system in systems {
-                if raw_systems.contains_key(&system) {
-                    continue;
-                }
-                if seen.len() + raw_systems.len() >= MAX_RESOURCES {
-                    return Err(AppError::BadRequest(
-                        "Compose resource limit exceeded".into(),
-                    ));
-                }
-                let row: Option<(Option<sqlx::types::Json<serde_json::Value>>, i64, Option<String>)> = sqlx::query_as(
-                    "SELECT CASE WHEN native_provider IS NULL AND octet_length(content::text) <= $3 THEN content END, octet_length(content::text)::bigint, native_provider FROM code_systems WHERE url = $1 AND ($2::text IS NULL OR version = $2) ORDER BY updated_at DESC, id LIMIT 1")
-                    .bind(&system.url).bind(system.version.as_deref().or_else(|| system_context.filter(|(url, _)| *url == system.url).map(|(_, version)| version))).bind(bytes_remaining).fetch_optional(&mut *tx).await?;
-                let row = row.ok_or_else(|| {
-                    AppError::NotFound(format!(
-                        "CodeSystem {} version {:?} not found",
-                        system.url, system.version
-                    ))
-                })?;
-                if row.2.is_some() {
-                    return Err(AppError::NativeValueSet);
-                }
-                bytes_remaining -= row.1;
-                let resource = row
-                    .0
-                    .ok_or_else(|| AppError::BadRequest("Compose input exceeds 32 MiB".into()))?
-                    .0;
-                raw_systems.insert(system, resource);
-            }
-            snapshot.value_sets.insert(key, compose);
-        }
+        let loaded = super::compose_loader::load_root(
+            &mut tx,
+            root.clone(),
+            id,
+            system_context,
+            inline,
+            &mut (32 * 1024 * 1024),
+        )
+        .await?;
         tx.commit().await?;
         let (_preparation, result) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-            let mut concept_count = 0;
-            for (key, resource) in raw_systems {
-                let definition = serde_json::from_value(resource)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid CodeSystem: {e}")))?;
-                let prepared = PreparedSystem::prepare(definition)?;
-                concept_count += prepared.concepts.len();
-                if concept_count > term_squid_core::MAX_CONCEPTS {
-                    return Err(AppError::BadRequest(
-                        "Snapshot concept limit exceeded".into(),
-                    ));
-                }
-                snapshot.systems.insert(key, prepared);
-            }
-            let result = ExpandedValueSet {
-                resource: std::sync::Arc::new(base_resource.expect("Root is resolved")),
-                members: std::sync::Arc::new(term_squid_core::PreparedValueSet::prepare(
-                    &snapshot, &root,
-                )?),
-            };
+            let result = super::compose_loader::prepare(loaded)?;
             // Keep preparation single-flight even if the awaiting HTTP request is cancelled.
             Ok((preparation, result))
         })
@@ -475,6 +385,126 @@ impl PostgresStore {
 
 #[async_trait]
 impl TerminologyStore for PostgresStore {
+    async fn code_system_capabilities(&self) -> Result<Vec<serde_json::Value>, AppError> {
+        let _permit = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::capabilities::systems(&self.pool),
+        )
+        .await
+        .map_err(|_| AppError::Overloaded)?
+    }
+    async fn expand_options(
+        &self,
+        request: super::ValueSetRequest<'_>,
+        options: &super::ExpansionOptions,
+        filter: Option<&str>,
+        offset: i64,
+        count: i64,
+    ) -> Result<super::ExpansionPage, AppError> {
+        let _request = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        let permit = self
+            .native_reads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Overloaded)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::expansion::run(&self.pool, request, options, filter, offset, count, permit),
+        )
+        .await
+        .map_err(|_| AppError::Overloaded)?
+    }
+    async fn lookup_details(
+        &self,
+        request: super::LookupRequest<'_>,
+    ) -> Result<super::LookupAnswer, AppError> {
+        let _request = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        let permit = self
+            .native_reads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Overloaded)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::lookup::run(&self.pool, request, permit),
+        )
+        .await
+        .map_err(|_| AppError::Overloaded)?
+    }
+    async fn translate_context(
+        &self,
+        request: super::TranslationRequest<'_>,
+    ) -> Result<Vec<super::TranslationAnswer>, AppError> {
+        let _request = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        let permit = self
+            .native_reads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Overloaded)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::translation::run(&self.pool, request, permit),
+        )
+        .await
+        .map_err(|_| AppError::Overloaded)?
+    }
+    async fn validate_candidates(
+        &self,
+        target: super::ValidationTarget<'_>,
+        candidates: &[super::ValidationCandidate<'_>],
+        allow_abstract: bool,
+    ) -> Result<super::ValidationAnswer, AppError> {
+        self.validate_context(
+            target,
+            candidates,
+            allow_abstract,
+            &super::ValidationOptions::default(),
+        )
+        .await
+    }
+    async fn validate_context(
+        &self,
+        target: super::ValidationTarget<'_>,
+        candidates: &[super::ValidationCandidate<'_>],
+        allow_abstract: bool,
+        options: &super::ValidationOptions,
+    ) -> Result<super::ValidationAnswer, AppError> {
+        let _request = self
+            .value_set_requests
+            .try_acquire()
+            .map_err(|_| AppError::Overloaded)?;
+        let permit = self
+            .native_reads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::Overloaded)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::validation::run(
+                &self.pool,
+                target,
+                candidates,
+                allow_abstract,
+                permit,
+                options,
+            ),
+        )
+        .await
+        .map_err(|_| AppError::Overloaded)?
+    }
     async fn query_value_set(
         &self,
         request: super::ValueSetRequest<'_>,
@@ -545,6 +575,7 @@ impl TerminologyStore for PostgresStore {
             let concept =
                 term_squid_core::ucum::UcumProvider::lookup(code, canonical.version.as_deref())?;
             return Ok(Some(ResolvedConcept {
+                url: term_squid_core::ucum::SYSTEM.into(),
                 native_provider: None,
                 name: Some("UCUM".into()),
                 version: Some(term_squid_core::ucum::VERSION.into()),

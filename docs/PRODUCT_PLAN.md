@@ -1,6 +1,6 @@
 # term-squid Product Development Plan
 
-Status: implementation started; milestones define the proposed delivery order. Updated November 3, 2026.
+Status: implementation started; milestones define the proposed delivery order. Updated November 4, 2026.
 
 term-squid is a standalone terminology product with its own FHIR API, content, storage, CLI and UI. Its internal engine is designed as a Rust library. Embedding it in OctoFHIR or placing terminology data in the OctoFHIR database is outside the current scope.
 
@@ -96,7 +96,9 @@ These tasks block using term-squid as an authoritative validation service.
 
 Display handling, language, inactive/abstract concepts, supplements, case sensitivity and ambiguous system inference are part of the tested semantics. Never silently ignore an unknown rule. Composition requires nesting limits, cycle detection and controlled errors.
 
-Acceptance: local preflights pass; selected ecosystem scenarios produce the same correct results with caching enabled and disabled. Contract completeness is defined by a requirements matrix, not just the small local suite.
+Acceptance: local preflights pass; selected ecosystem scenarios produce the same correct results with caching enabled and disabled. Contract completeness is tracked in [the API requirements matrix](API_REQUIREMENTS.md), not just the small local suite.
+
+The [R4 API implementation](API_IMPLEMENTATION_REPORT.md) now covers all **70 top-level inputs of six declared operations**, typed/CodeableConcept/inline workflows, one-snapshot validation, date/language/designation semantics, expansion version/context directives, bounded mapping rules and CodeSystem supplements. The pinned [contract inventory](R4_API_CONTRACT.json) links positive acceptance evidence. Current Rust/PostgreSQL validation passes 147 tests. Dynamic terminology metadata and local OperationDefinition resources describe actual behavior. The final embedded build passes 23 browser/API scenarios, JSON/package restart recovery and all seven unchanged local gates; see the report for raw evidence and toolchain. Provider/registry bounds remain explicit, and clinical corpus/composite goals remain separate; this does not assert unrestricted FHIR support. Apply migration `20261104000006_supplements`.
 
 ## Milestone 2: Library Engine and Prepared Data
 
@@ -159,24 +161,17 @@ Basic limits should appear while building the engine; this milestone completes t
 
 Acceptance: a new instance deploys from the documentation, restores content and passes smoke/conformance checks; updates do not interrupt or silently change in-flight operations.
 
-## Milestone 6: Branded UI and Shared Components
+## Milestone 6: Branded Public UI and Standalone Administration
 
-Rewrite the terminology UI to follow OctoFHIR server branding: shared colors, typography, spacing, icons, navigation and interaction patterns. Prefer the server's common UI kit over maintaining an unrelated component system.
+The first UI/admin increment is implemented. See [the implementation and validation report](UI_ADMIN_IMPLEMENTATION_REPORT.md) and [the continuation checklist](NEXT_SESSION_UI.md).
 
-The user has selected this as a separate UI/admin workstream. Use [the implementation prompt](NEXT_SESSION_UI.md). Public terminology browsing and supported read operations remain accessible without login; administration, uploads and imports require server-authorized admin sessions. Authenticated administrators see the relevant contextual import controls and a separate administration area. Hidden buttons alone are not access control; public read-only POST operations must remain public.
+- React 19 replaces SolidJS and directly consumes the actual `@octofhir/ui-kit` from server-rs commit `5a17d7428e8da253fcd87375e45b41c89ff59997`, selecting `packages/ui-kit` through pnpm's fixed Git subdirectory selector. Node/pnpm and the lockfile are pinned; a clean exported checkout installs/builds without a sibling checkout. Consumer alias resolution fixes the kit's concrete `#/…` packaging defect without copying its components.
+- Public overview, three catalogs, filtered pagination, projection concept pages, canonical/business-version selection, resource details/FHIR JSON and supported GET/POST terminology tools remain anonymous. The shell, inputs, tables, dialogs, typography and both themes use the real kit. A new mascot uses the existing squid/sombrero identity in the marigold/ink family.
+- Separate `/admin` and `/api/admin` areas use standalone Argon2id bootstrap credentials, persistent expiring/revocable HttpOnly cookie sessions, Origin/CSRF checks and a login retry budget. Mutation authorization precedes body/staging/job effects. Public terminology hot paths have no new auth queries.
+- Streaming single-resource R4 JSON and bounded local R4 FHIR `.tgz` package uploads support CodeSystem, ValueSet and ConceptMap with inspection, a bounded persistent queue, cancellation and restart recovery. [The package increment](PACKAGE_IMPORT_REPORT.md) adds aggregate archive limits and all-resource atomic activation without downloading dependencies. Shared `term-squid-ingestion` publishes metadata/projections and job success atomically, preserving immutable versions, idempotence and generation freshness. CLI commands retain their formats and native manifest workflows.
+- Frontend-before-RustEmbed ordering and artifact paths are fixed in just/CI/release recipes. CI is configured to exercise the embedded release, browser workflows, process restart and unchanged local semantic gates.
 
-The current terminology frontend uses SolidJS. The inspected server package `@octofhir/ui-kit` targets React 19, exposes source entry points and is marked `private: true`. The user selected direct Git reuse: prefer React migration and a fixed-commit Git dependency selecting `packages/ui-kit` in the server monorepo. The private flag prevents npm publication, not Git installation. Verify the actual package-manager selector, dependency/asset boundary and clean-checkout build.
-
-1. Audit the server design tokens, component APIs and existing terminology screens; define the branding and accessibility requirements to preserve.
-2. Prefer migrating the frontend to React to consume the existing common kit directly. Diagnose concrete compatibility problems before introducing duplicated components.
-3. Install the kit from the server Git repository at an exact reachable commit, selecting its `packages/ui-kit` subdirectory. Lock the resolution, document Git access/toolchain requirements for CI and verify source imports/fonts/styles. No npm publication or separately provisioned sibling checkout is required; do not default to vendoring the unpublished kit.
-4. Rewrite the existing screens using the chosen shared foundation, preserving terminology workflows, version selection, pagination, loading/empty/error states and visible unsupported-operation errors. Keep the standalone API boundary and embedded frontend build working.
-5. Verify the visual result against server branding and check keyboard navigation, contrast and responsive layouts.
-6. Implement standalone admin bootstrap/login/session/logout and backend authorization on every administrative mutation before upload or job side effects. Keep public read routes free of required sessions; define admin cookie/origin/CSRF handling separately from the public API.
-7. Expose real bounded upload/import jobs through shared CLI/backend ingestion logic, preserving atomic publication, version conflicts and cross-process freshness. Deliver a working supported-format flow; unsupported native formats remain explicit. Do not use legacy JSON-only storage writes as an import pipeline.
-8. Verify anonymous public GET/POST access, denied unauthorized admin requests without side effects, session expiry/logout, successful and failed imports, and a clean frontend-before-backend embedded build in CI.
-
-Acceptance: the UI follows OctoFHIR branding; the shared-kit/framework decision and package delivery are documented; a clean checkout builds in CI without a local `server-rs` directory or an unavailable public package. Public terminology workflows remain usable without login; only authorized admins can upload/import/manage content through functional backend jobs. Access control, atomicity and session lifecycle have meaningful integration/browser checks. This work does not require embedding the terminology engine or database into OctoFHIR.
+This increment does not implement Bundle/arbitrary archive import, package dependency resolution, RF2/LOINC multifile upload, general IAM/OIDC, content editing/deletion, RxNorm or missing LOINC accessories. It does not establish complete FHIR conformance, clinical coverage or a new performance/composite score. One configured admin worker owns a schema; public replicas may remain unconfigured. [The pinned FHIRsmith comparison](FHIRSMITH_UI_ADMIN_COMPARISON.md) distinguishes its public terminology UI and startup library ingestion from this authenticated online upload/job workflow.
 
 ## Later Development
 

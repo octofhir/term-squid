@@ -14,29 +14,55 @@ const INPUT_BYTES: i64 = 32 * 1024 * 1024;
 type Key = (Canonical, Option<Uuid>);
 
 enum Snapshot {
-    Prepared(PreparedHierarchy),
-    Unsupported(Option<String>),
+    Prepared {
+        plan: PreparedHierarchy,
+        url: String,
+        version: Option<String>,
+    },
+    Unsupported {
+        meaning: Option<String>,
+        url: String,
+        version: Option<String>,
+    },
     Sql,
 }
 
 impl Snapshot {
     fn charge(&self) -> usize {
         match self {
-            Self::Prepared(plan) => plan.memory_charge(),
-            Self::Unsupported(meaning) => 4096 + meaning.as_ref().map_or(0, String::len),
+            Self::Prepared { plan, url, version } => {
+                plan.memory_charge() + url.capacity() + version.as_ref().map_or(0, String::capacity)
+            }
+            Self::Unsupported {
+                meaning,
+                url,
+                version,
+            } => {
+                4096 + meaning.as_ref().map_or(0, String::capacity)
+                    + url.capacity()
+                    + version.as_ref().map_or(0, String::capacity)
+            }
             Self::Sql => 4096,
         }
     }
     fn resolve(&self, a: &str, b: &str, observed: &Observation) -> Read {
-        let (meaning, found) = match self {
+        let (url, version, meaning, found) = match self {
             Self::Sql => return Read::Sql,
-            Self::Unsupported(meaning) => (meaning.clone(), None),
-            Self::Prepared(plan) => (
+            Self::Unsupported {
+                meaning,
+                url,
+                version,
+            } => (url.clone(), version.clone(), meaning.clone(), None),
+            Self::Prepared { plan, url, version } => (
+                url.clone(),
+                version.clone(),
                 Some("is-a".into()),
                 Some(plan.resolve(a, b, &observed.key_a, &observed.key_b)),
             ),
         };
         Read::Resolved(ResolvedSubsumption {
+            url,
+            version,
             hierarchy_meaning: meaning,
             code_a: found.as_ref().and_then(|r| r.code_a).map(str::to_owned),
             code_b: found.as_ref().and_then(|r| r.code_b).map(str::to_owned),
@@ -53,6 +79,8 @@ pub(super) enum Read {
 
 #[derive(sqlx::FromRow)]
 struct Metadata {
+    url: String,
+    version: Option<String>,
     id: Uuid,
     hierarchy_meaning: Option<String>,
     case_sensitive: bool,
@@ -141,7 +169,7 @@ impl HierarchyPlans {
             return Ok(plan.resolve(a, b, &observed));
         }
         let metadata = sqlx::query_as::<_,Metadata>(
-            "SELECT id,hierarchy_meaning,case_sensitive,native_provider FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+            "SELECT id,url,version,hierarchy_meaning,case_sensitive,native_provider FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
         let Some(metadata) = metadata else {
             tx.commit().await?;
@@ -151,7 +179,11 @@ impl HierarchyPlans {
             != Some("is-a")
         {
             (
-                Some(Snapshot::Unsupported(metadata.hierarchy_meaning)),
+                Some(Snapshot::Unsupported {
+                    meaning: metadata.hierarchy_meaning.clone(),
+                    url: metadata.url.clone(),
+                    version: metadata.version.clone(),
+                }),
                 Vec::new(),
                 Vec::new(),
             )
@@ -202,7 +234,11 @@ impl HierarchyPlans {
                 if plan.memory_charge() + 4096 + key_bytes * 8 > CACHE_BYTES {
                     Snapshot::Sql
                 } else {
-                    Snapshot::Prepared(plan)
+                    Snapshot::Prepared {
+                        plan,
+                        url: metadata.url,
+                        version: metadata.version,
+                    }
                 }
             };
             Ok((admission, Arc::new(snapshot)))

@@ -30,6 +30,7 @@ pub struct Parameter {
 #[allow(clippy::enum_variant_names)]
 pub enum ParameterValue {
     ValueString(String),
+    ValueDateTime(String),
     ValueBoolean(bool),
     ValueInteger(i64),
     ValueDecimal(f64),
@@ -43,7 +44,10 @@ pub enum ParameterValue {
 
 /// FHIR Coding datatype
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Coding {
+    #[serde(rename = "userSelected", skip_serializing_if = "Option::is_none")]
+    pub user_selected: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,44 +68,6 @@ pub struct CodeableConcept {
 }
 
 impl Parameters {
-    /// Do not silently discard result-affecting options on the supported inline subset.
-    pub fn validate_inline_fields(
-        &self,
-        strings: &[&str],
-        integers: &[&str],
-    ) -> Result<(), crate::error::AppError> {
-        use crate::error::AppError;
-        let mut seen = std::collections::BTreeSet::new();
-        for parameter in self.parameter.iter().flatten() {
-            let name = parameter.name.as_str();
-            if !seen.insert(name) {
-                return Err(AppError::BadRequest(format!("Duplicate {name} parameter")));
-            }
-            if name == "valueSet" {
-                continue; // The resource selector has its own structural check.
-            }
-            let typed = if strings.contains(&name) {
-                self.get_string(name).is_some()
-            } else if integers.contains(&name) {
-                self.get_integer(name).is_some()
-            } else {
-                return Err(AppError::BadRequest(format!(
-                    "Unsupported inline parameter {name}"
-                )));
-            };
-            if !typed
-                || parameter.resource.is_some()
-                || parameter.part.is_some()
-                || parameter.other.keys().any(|key| key.starts_with("value"))
-            {
-                return Err(AppError::BadRequest(format!(
-                    "Invalid inline parameter type: {name}"
-                )));
-            }
-        }
-        Ok(())
-    }
-
     /// Validate the request-local ValueSet selector without silently using a stored root.
     pub fn inline_value_set(
         &self,
@@ -137,10 +103,31 @@ impl Parameters {
                 "valueSet must contain exactly one resource, not value[x] or part".into(),
             ));
         }
-        if instance || self.get_parameter("url").is_some() {
+        if instance {
             return Err(AppError::BadRequest(
-                "Choose one ValueSet selector: instance, url or inline valueSet".into(),
+                "An instance cannot be combined with an inline ValueSet".into(),
             ));
+        }
+        if let Some(url) = self.get_string("url") {
+            let resource = parameter.resource.as_ref().expect("Resource shape checked");
+            let actual = resource["url"].as_str().ok_or_else(|| {
+                AppError::BadRequest(
+                    "An anonymous inline ValueSet cannot assert a URL selector".into(),
+                )
+            })?;
+            let selected =
+                term_squid_core::Canonical::parse(url, self.get_string("valueSetVersion"))?;
+            let actual = term_squid_core::Canonical::parse(actual, resource["version"].as_str())?;
+            if selected.url != actual.url
+                || selected
+                    .version
+                    .as_ref()
+                    .is_some_and(|v| Some(v) != actual.version.as_ref())
+            {
+                return Err(AppError::BadRequest(
+                    "Inline ValueSet identity conflicts with the URL selector".into(),
+                ));
+            }
         }
         if let Some(version) = self.get_parameter("valueSetVersion") {
             if version.resource.is_some()
@@ -185,9 +172,9 @@ impl Parameters {
         }
     }
 
-    pub fn get_integer(&self, name: &str) -> Option<i64> {
+    pub fn get_date(&self, name: &str) -> Option<&str> {
         match self.get_parameter(name)?.value.as_ref()? {
-            ParameterValue::ValueInteger(n) => Some(*n),
+            ParameterValue::ValueDateTime(value) => Some(value),
             _ => None,
         }
     }
@@ -195,20 +182,6 @@ impl Parameters {
     pub fn get_boolean(&self, name: &str) -> Option<bool> {
         match self.get_parameter(name)?.value.as_ref()? {
             ParameterValue::ValueBoolean(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn get_code(&self, name: &str) -> Option<&str> {
-        match self.get_parameter(name)?.value.as_ref()? {
-            ParameterValue::ValueCode(c) => Some(c),
-            _ => None,
-        }
-    }
-
-    pub fn get_uri(&self, name: &str) -> Option<&str> {
-        match self.get_parameter(name)?.value.as_ref()? {
-            ParameterValue::ValueUri(u) => Some(u),
             _ => None,
         }
     }
@@ -231,6 +204,14 @@ impl Parameter {
         }
     }
 
+    pub fn uri(name: impl Into<String>, value: impl Into<String>) -> Self {
+        let mut parameter = Self::string(name, value);
+        parameter.value = parameter.value.map(|v| match v {
+            ParameterValue::ValueString(s) => ParameterValue::ValueUri(s),
+            other => other,
+        });
+        parameter
+    }
     pub fn boolean(name: impl Into<String>, value: bool) -> Self {
         Self {
             name: name.into(),
@@ -275,6 +256,7 @@ impl Parameter {
 impl Coding {
     pub fn new(system: impl Into<String>, code: impl Into<String>) -> Self {
         Self {
+            user_selected: None,
             system: Some(system.into()),
             version: None,
             code: Some(code.into()),

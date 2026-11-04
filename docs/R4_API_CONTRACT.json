@@ -1,0 +1,1368 @@
+{
+  "fhirVersion": "4.0.1",
+  "scope": "All six term-squid R4 terminology operations and their declared inputs. Additional operations and public authoring are outside this completion boundary.",
+  "completion": "implementation-complete",
+  "operations": [
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup",
+      "source": "https://hl7.org/fhir/R4/operation-codesystem-lookup.json",
+      "sourceSha256": "f054903c15516064be2b6fe51c99dc937c1b608d2aeba614b355d689f907abe6",
+      "type": true,
+      "instance": false,
+      "parameters": [
+        {
+          "name": "code",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "system",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "version",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "coding",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "date",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "dateTime",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "displayLanguage",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        },
+        {
+          "name": "property",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts",
+            "tests::api_completion_tests::lookup_rich_output_preserves_typed_properties_real_designations_language_date_and_hierarchy",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content"
+          ]
+        }
+      ],
+      "id": "CodeSystem-lookup",
+      "name": "Concept Look Up & Decomposition",
+      "code": "lookup",
+      "resource": [
+        "CodeSystem"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "name",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "display",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "designation",
+          "use": "out",
+          "min": 0,
+          "max": "*",
+          "part": [
+            {
+              "name": "language",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "code"
+            },
+            {
+              "name": "use",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "Coding"
+            },
+            {
+              "name": "value",
+              "use": "out",
+              "min": 1,
+              "max": "1",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "name": "property",
+          "use": "out",
+          "min": 0,
+          "max": "*",
+          "part": [
+            {
+              "name": "code",
+              "use": "out",
+              "min": 1,
+              "max": "1",
+              "type": "code"
+            },
+            {
+              "name": "value",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "Element",
+              "extension": [
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "code"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "Coding"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "string"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "integer"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "boolean"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "dateTime"
+                },
+                {
+                  "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                  "valueUri": "decimal"
+                }
+              ]
+            },
+            {
+              "name": "description",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "string"
+            },
+            {
+              "name": "subproperty",
+              "use": "out",
+              "min": 0,
+              "max": "*",
+              "part": [
+                {
+                  "name": "code",
+                  "use": "out",
+                  "min": 1,
+                  "max": "1",
+                  "type": "code"
+                },
+                {
+                  "name": "value",
+                  "use": "out",
+                  "min": 1,
+                  "max": "1",
+                  "type": "Element",
+                  "extension": [
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "code"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "Coding"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "string"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "integer"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "boolean"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "dateTime"
+                    },
+                    {
+                      "url": "http://hl7.org/fhir/StructureDefinition/operationdefinition-allowed-type",
+                      "valueUri": "decimal"
+                    }
+                  ]
+                },
+                {
+                  "name": "description",
+                  "use": "out",
+                  "min": 0,
+                  "max": "1",
+                  "type": "string"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes",
+      "source": "https://hl7.org/fhir/R4/operation-codesystem-subsumes.json",
+      "sourceSha256": "b2bd0c2ce7a3f6438283891ba186444aa02938be2b20cffa5ea2c0f5201c3c3f",
+      "type": true,
+      "instance": true,
+      "parameters": [
+        {
+          "name": "codeA",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        },
+        {
+          "name": "codeB",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        },
+        {
+          "name": "system",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        },
+        {
+          "name": "version",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        },
+        {
+          "name": "codingA",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        },
+        {
+          "name": "codingB",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::subsumption_coding_pairs_preserve_all_outcomes_versions_and_instance_identity",
+            "tests::subsumption_versions_case_and_atomic_updates"
+          ]
+        }
+      ],
+      "id": "CodeSystem-subsumes",
+      "name": "Subsumption Testing",
+      "code": "subsumes",
+      "resource": [
+        "CodeSystem"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "outcome",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "code"
+        }
+      ]
+    },
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/CodeSystem-validate-code",
+      "source": "https://hl7.org/fhir/R4/operation-codesystem-validate-code.json",
+      "sourceSha256": "3c32ba1c460dd4d00834805ac0f6f957d7ccda40724bf84d8bc30490a488c5bb",
+      "type": true,
+      "instance": true,
+      "parameters": [
+        {
+          "name": "url",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "codeSystem",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "CodeSystem",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "code",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "version",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "display",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "coding",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "codeableConcept",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "CodeableConcept",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "date",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "dateTime",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "abstract",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "displayLanguage",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::inline_codesystem_validation_supports_complete_fragment_case_and_abstract_semantics",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        }
+      ],
+      "id": "CodeSystem-validate-code",
+      "name": "Code System based Validation",
+      "code": "validate-code",
+      "resource": [
+        "CodeSystem"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "result",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "boolean"
+        },
+        {
+          "name": "message",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "display",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate",
+      "source": "https://hl7.org/fhir/R4/operation-conceptmap-translate.json",
+      "sourceSha256": "5871319e2a7104626dfca3fa1f926c68d69d0da044244cb6014001d10e7b7457",
+      "type": true,
+      "instance": true,
+      "parameters": [
+        {
+          "name": "url",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "conceptMap",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "ConceptMap",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "conceptMapVersion",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "code",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "system",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "version",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "source",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "coding",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "codeableConcept",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "CodeableConcept",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "target",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "targetsystem",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "dependency",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "part": [
+            {
+              "name": "element",
+              "use": "in",
+              "min": 0,
+              "max": "1",
+              "type": "uri"
+            },
+            {
+              "name": "concept",
+              "use": "in",
+              "min": 0,
+              "max": "1",
+              "type": "CodeableConcept"
+            }
+          ],
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        },
+        {
+          "name": "reverse",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::inline_translation_handles_coding_codeable_concept_versions_and_source_provenance_without_database",
+            "tests::api_completion_tests::translate_dependencies_products_and_unmapped_rules_are_real_public_operations",
+            "tests::api_completion_tests::translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real_content"
+          ]
+        }
+      ],
+      "id": "ConceptMap-translate",
+      "name": "Concept Translation",
+      "code": "translate",
+      "resource": [
+        "ConceptMap"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "result",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "boolean"
+        },
+        {
+          "name": "message",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "match",
+          "use": "out",
+          "min": 0,
+          "max": "*",
+          "part": [
+            {
+              "name": "equivalence",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "code"
+            },
+            {
+              "name": "concept",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "Coding"
+            },
+            {
+              "name": "product",
+              "use": "out",
+              "min": 0,
+              "max": "*",
+              "part": [
+                {
+                  "name": "element",
+                  "use": "out",
+                  "min": 0,
+                  "max": "1",
+                  "type": "uri"
+                },
+                {
+                  "name": "concept",
+                  "use": "out",
+                  "min": 0,
+                  "max": "1",
+                  "type": "Coding"
+                }
+              ]
+            },
+            {
+              "name": "source",
+              "use": "out",
+              "min": 0,
+              "max": "1",
+              "type": "uri"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/ValueSet-expand",
+      "source": "https://hl7.org/fhir/R4/operation-valueset-expand.json",
+      "sourceSha256": "d3f3798c4aa50c33e8d0df00e03d48ba8c24119808fcceaf8d79ec43d67853c4",
+      "type": true,
+      "instance": true,
+      "parameters": [
+        {
+          "name": "url",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "valueSet",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "ValueSet",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "valueSetVersion",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "context",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "contextDirection",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "filter",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "date",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "dateTime",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "offset",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "integer",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "count",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "integer",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "includeDesignations",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "designation",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "includeDefinition",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "activeOnly",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "excludeNested",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "excludeNotForUI",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "excludePostCoordinated",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "displayLanguage",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "exclude-system",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "canonical",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "system-version",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "canonical",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "check-system-version",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "canonical",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        },
+        {
+          "name": "force-system-version",
+          "use": "in",
+          "min": 0,
+          "max": "*",
+          "type": "canonical",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::expansion_options_apply_before_counting_paging_and_transitive_version_resolution",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::terminology_http_versions_compose_and_refresh",
+            "tests::inline_valueset_http_expansion_membership_and_versions"
+          ]
+        }
+      ],
+      "id": "ValueSet-expand",
+      "name": "Value Set Expansion",
+      "code": "expand",
+      "resource": [
+        "ValueSet"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "return",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "ValueSet"
+        }
+      ]
+    },
+    {
+      "canonical": "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code",
+      "source": "https://hl7.org/fhir/R4/operation-valueset-validate-code.json",
+      "sourceSha256": "e86b3620e8dfa6b84cd21697cf94cadffde2fc512a3b9fad742ca5afbb11b5a3",
+      "type": true,
+      "instance": true,
+      "parameters": [
+        {
+          "name": "url",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "context",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "valueSet",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "ValueSet",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "valueSetVersion",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "code",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "system",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "uri",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "systemVersion",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "display",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "string",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "coding",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "Coding",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "codeableConcept",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "CodeableConcept",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "date",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "dateTime",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "abstract",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "boolean",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        },
+        {
+          "name": "displayLanguage",
+          "use": "in",
+          "min": 0,
+          "max": "1",
+          "type": "code",
+          "status": "implemented",
+          "acceptanceTests": [
+            "tests::api_completion_tests::codeable_concept_validation_uses_any_valid_candidate_and_preserves_unknown_negatives",
+            "tests::api_completion_tests::validation_date_language_context_and_system_inference_use_the_selected_definitions",
+            "tests::api_completion_tests::native_rich_expansion_filters_translated_displays_before_paging_and_preserves_projection_content",
+            "tests::coded_input_tests::coding_preserves_versions_displays_and_stored_inline_instance_contexts"
+          ]
+        }
+      ],
+      "id": "ValueSet-validate-code",
+      "name": "Value Set based Validation",
+      "code": "validate-code",
+      "resource": [
+        "ValueSet"
+      ],
+      "affectsState": false,
+      "outputs": [
+        {
+          "name": "result",
+          "use": "out",
+          "min": 1,
+          "max": "1",
+          "type": "boolean"
+        },
+        {
+          "name": "message",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        },
+        {
+          "name": "display",
+          "use": "out",
+          "min": 0,
+          "max": "1",
+          "type": "string"
+        }
+      ]
+    }
+  ],
+  "acceptancePolicy": "Every declared input has positive behavior coverage. Completion also requires the full Rust/PostgreSQL suite, unchanged local benchmark gates, embedded production browser/admin scenarios and clean locked build. Provider and registry bounds are documented separately."
+}

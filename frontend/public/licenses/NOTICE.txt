@@ -1,0 +1,11 @@
+term-squid uses @octofhir/ui-kit from OctoFHIR/server-rs,
+revision 5a17d7428e8da253fcd87375e45b41c89ff59997 (Apache-2.0).
+The UI kit's source notices are retained in the installed Git package.
+
+Self-hosted IBM Plex Sans, JetBrains Mono, Manrope and Rubik fonts
+are distributed under the SIL Open Font License 1.1. Their notices
+and license texts accompany this file.
+
+The term-squid mascot icon was generated for this product with OpenAI
+image generation, using the existing term-squid mascot and OctoFHIR's
+app icon as style references. It is not an OctoFHIR server identity mark.

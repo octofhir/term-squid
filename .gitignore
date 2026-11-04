@@ -47,3 +47,6 @@ data/
 
 # Local benchmark sources, generated fixtures and measurements
 .benchmarks/
+
+# Private runtime administrator staging (configure a durable service-owned path in production)
+.term-squid-staging/

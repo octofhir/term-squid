@@ -1,12 +1,30 @@
 # Development Handoff
 
-Updated November 3, 2026. This file is intended for an agent starting from a clean checkout on another computer.
+Updated November 4, 2026. This file is intended for an agent starting from a clean checkout on another computer.
+
+## Latest API checkpoint
+
+The full agreed R4 operation contract is implemented: 70 top-level inputs across lookup, both validation operations, subsumption, expansion and translation. Read [API_IMPLEMENTATION_REPORT.md](API_IMPLEMENTATION_REPORT.md), [API_REQUIREMENTS.md](API_REQUIREMENTS.md) and the pinned [machine-readable contract](R4_API_CONTRACT.json). Strict typed/primitive/CodeableConcept/inline forms, one-snapshot alternatives, dates/languages/designations, expansion directives, bounded mappings and local context/discovery are implemented. Supplements add properties/translations without changing base identity; base-dependent package import preserves global lock ordering. Public reads still make no authorization/session queries.
+
+Current Rust/PostgreSQL validation: **147 passed, zero ignored**; workspace Clippy, formatting, 29 harness tests and clean frozen frontend-first build pass. **23 embedded browser/API scenarios**, JSON/package crash recovery and **7/7 unchanged local gates** pass; see the report. Apply **20261104000006_supplements** before the updated backend/CLI; it adds/backfills designation projections and a supplement target index. The UI preview remains `http://127.0.0.1:5173/`, backed by the development-schema process on 8081; consult the report for the delivered immutable artifact and final runtime verification.
+
+Local context supports ValueSet canonicals or ValueSet/{uuid}; no StructureDefinition registry is provisioned. Historical inference requires source/release dates or explicit immutable editions. Native clinical provider/accessory/ECL/refset and general UCUM ValueSet enumeration limits remain; unsupported knowledge is never a conclusive invalid-code result. This checkpoint is the agreed product API, not unrestricted FHIR/clinical-corpus certification. No commit/push/deploy is authorized.
+
+## UI/admin/package checkpoint before the API increment
+
+Validation checkpoint: **119 Rust tests**, **29 harness tests**, **21 embedded-browser tests** and **7/7 local FHIR gates** pass.
+
+The branded public UI and standalone administration are implemented; start with [UI_ADMIN_IMPLEMENTATION_REPORT.md](UI_ADMIN_IMPLEMENTATION_REPORT.md) and [NEXT_SESSION_UI.md](NEXT_SESSION_UI.md). React 19 consumes the actual fixed-commit Git UI-kit package; no sibling server process/database/authentication is needed. Public catalogs and supported GET/POST terminology operations remain anonymous. `/admin` uses backend sessions and protected streaming upload/import jobs through the shared ingestion crate.
+
+Apply migration `20261103000004_admin`, build the frontend before RustEmbed, and configure the bootstrap hash/origin/private staging directory as documented. There is no default password. Apply the additional migration `20261104000005_admin_package`. Browser imports accept one R4 CodeSystem/ValueSet/ConceptMap JSON resource or a bounded local R4 FHIR `.tgz` package; see [PACKAGE_IMPORT_REPORT.md](PACKAGE_IMPORT_REPORT.md). Bundles, automatic dependency downloads and native source archives remain unsupported. Existing RF2/LOINC CLI manifest workflows remain intact. Sessions, source/checksum/job details and mutation endpoints are private; cache freshness and publication/rollback contracts remain.
+
+Raw validation, generated fixtures, source exports, images/screenshots and local credentials stay in `.benchmarks/ui-admin/` and do not travel with Git. The new final icon assets under `frontend/public/branding/`, ingestion crate, migration, tests and reports must be preserved with the working tree. No commit/push/deploy was requested or performed. See the implementation report for final test counts, embedded-browser evidence and limitations. No new performance/composite claim is made.
 
 ## Read first
 
 For a new session on another device, follow [the resume checklist](NEXT_SESSION.md). It lists what is committed, what must be recreated and the next clinical coverage and native execution work.
 
-For the user-selected UI/admin rewrite, use [the dedicated implementation prompt](NEXT_SESSION_UI.md): match the OctoFHIR server, retain anonymous public terminology browsing/operations and implement authenticated administration/uploads with real backend authorization. Prefer React and the actual UI kit from a fixed-commit Git dependency selecting `packages/ui-kit`; unpublished/private metadata is not a Git-installation blocker. Reuse shared ingestion services and keep clean builds independent of a separately provisioned sibling server checkout.
+For subsequent UI/admin work, use [the dedicated continuation checklist](NEXT_SESSION_UI.md). The React/Git-kit migration, anonymous browsing, backend authentication and transactional JSON/local-package import jobs are implemented. Read the implementation report before extending formats or access policy; keep clean builds independent of a sibling checkout.
 
 1. [Product plan](PRODUCT_PLAN.md): scope, milestones, performance objectives and the branded UI roadmap.
 2. [Original performance report](PERFORMANCE_REPORT.md), [prepared data](PREPARED_DATA_REPORT.md), [warm reads](WARM_READ_REPORT.md), [pool/transport experiment](TRANSPORT_PERFORMANCE_REPORT.md), [prepared translation](TRANSLATION_PERFORMANCE_REPORT.md), [prepared hierarchies](HIERARCHY_REPORT.md), [fresh generation batching](GENERATION_BATCHING_REPORT.md) and [prepared CodeSystem reads](CONCEPT_READS_REPORT.md).

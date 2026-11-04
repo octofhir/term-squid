@@ -11,9 +11,9 @@ The primary performance KPI is first place by the unchanged upstream composite, 
 
 ## Prerequisites
 
-- Rust and Cargo, Bun, [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), `just`, Git, and `tar`.
+- Current stable Rust and Cargo; Node 24.16.0 / pnpm 10.11.0 for the embedded application build; Bun, [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), `just`, Git, and `tar`.
 - For the isolated database: Docker Compose. `bench-migrate` uses the repository CLI; a separate `sqlx-cli` is optional for manual migration administration.
-- A release build of the server. The `bench-server` recipe sets this up; debug builds are unsuitable for performance comparisons.
+- A release build of the server. The `bench-server` recipe builds the locked Git UI-kit frontend before compiling RustEmbed; debug builds are unsuitable for performance comparisons.
 
 ## Run against term-squid
 
@@ -344,3 +344,9 @@ CARGO_TARGET_DIR=.benchmarks/target cargo run --locked --release --bin term-squi
 The main table supports numeric primary-term lookup/validation and numeric implicit membership. Parts, answers/lists, Groups and hierarchy are separate files/semantics. Broad `http://loinc.org/vs` expansion fails explicitly; use explicit numeric concepts or the custom `source-table=Loinc.csv` filter to enumerate only primary terms. Raw CSV axis strings use `raw-*` properties, not standard LP-coded axis meanings. Mixed native SNOMED/LOINC sets share one fresh snapshot; arbitrary finite/native mixing remains unsupported.
 
 The separate generated version `99.0` / 100,005-row schema and measurements under `.benchmarks/loinc-provider-20261103/` are diagnostic only. Never add it to the Round 0 clinical attestation or load only sampled pool codes to obtain a pass.
+
+## Embedded UI and administration checks
+
+The benchmark dashboard remains separate from the application UI. See [the UI/admin implementation report](../docs/UI_ADMIN_IMPLEMENTATION_REPORT.md) for the fixed Git dependency, bootstrap configuration and build ordering. Public FHIR GET/POST operations remain anonymous. Benchmark seeding still uses the CLI; authenticated HTTP imports are a separate bounded workflow and must not alter the matched benchmark corpus.
+
+`ui_admin_smoke.py` validates a release binary against an explicitly disposable loopback database. Generate fixtures first, install Playwright Chromium in `frontend/`, then provide the database URL and optional backend/CLI binary paths. It also exercises [typed public Coding contracts](../docs/API_CODING_REPORT.md), including a lookup primed negative before a package activation. It checks real JSON/package crash/restart recovery (including a package interrupted after an earlier resource write), browser workflows and the unchanged seven local gates. Package fixtures cover atomic activation, public expansion and keyboard-accessible mobile tables in both themes. See [package limits and lifecycle](../docs/PACKAGE_IMPORT_REPORT.md). Keep these builds/browser checks separate from measured load. All evidence and ephemeral credentials remain below `.benchmarks/ui-admin/`; do not publish the private smoke/staging directories as CI artifacts.

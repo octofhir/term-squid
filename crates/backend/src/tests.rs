@@ -1748,9 +1748,20 @@ async fn prepared_concept_versions_payloads_freshness_and_admission() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(
-        parameter(&body, "designation")["part"][1]["valueString"],
-        "Definition"
+    assert!(body["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["name"] == "property"
+            && p["part"][0]["valueCode"] == "definition"
+            && p["part"][1]["valueString"] == "Definition"));
+    assert!(
+        !body["parameter"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "designation"),
+        "Definitions must not be represented as invented designation uses"
     );
     assert!(body["parameter"]
         .as_array()
@@ -2231,7 +2242,7 @@ async fn inline_valueset_rejects_invalid_selectors_without_database() {
         json!({"name":"count","valueString":"1"}),
         json!({"name":"filter","valueInteger":1}),
         json!({"name":"systemVersion","valueInteger":1}),
-        json!({"name":"includeDesignations","valueBoolean":true}),
+        json!({"name":"includeDesignations","valueString":"true"}),
         json!({"name":"coding","valueCoding":{"system":"urn:codes","code":"A"}}),
     ] {
         let mut input = base.clone();
@@ -2747,11 +2758,7 @@ async fn builtin_ucum_canonical_http_uses_library_without_database() {
     )
     .await;
     assert_eq!(status, 422, "{body}");
-    let (status, body) = request(&app, "GET", "/r4/TerminologyCapabilities", Value::Null).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["codeSystem"][0]["uri"], "http://unitsofmeasure.org");
-    assert_eq!(body["codeSystem"][0]["version"][0]["code"], "2.2");
-    assert_eq!(body["codeSystem"][0]["version"][0]["compositional"], true);
+    // Dynamic UCUM inventory assertions run with the real metadata snapshot in api_completion_tests.
 }
 
 #[tokio::test]
@@ -2999,3 +3006,9 @@ mod loinc_provider_tests;
 
 #[path = "lookup_property_tests.rs"]
 mod lookup_property_tests;
+
+#[path = "coded_input_tests.rs"]
+mod coded_input_tests;
+
+#[path = "api_completion_tests.rs"]
+mod api_completion_tests;

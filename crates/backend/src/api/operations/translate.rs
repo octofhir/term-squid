@@ -1,198 +1,556 @@
-use axum::{
-    extract::{Path, Query, State},
-    Json,
+use crate::{
+    api::{
+        coded_input::{CodedInput, InputType},
+        extractors::{
+            validate_json_format, FhirJson as Json, FhirParameters, FhirPath as Path,
+            FhirQuery as Query,
+        },
+        parameters::{Coding, Parameter, ParameterValue, Parameters},
+    },
+    error::AppError,
+    store::TerminologyStore,
 };
+use axum::extract::State;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
 
-use crate::api::parameters::{Coding, Parameter, Parameters};
-use crate::error::AppError;
-use crate::store::TerminologyStore;
-
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TranslateParams {
     pub url: Option<String>,
     pub code: Option<String>,
     pub system: Option<String>,
+    pub version: Option<String>,
     #[serde(rename = "targetsystem")]
     pub target_system: Option<String>,
+    pub source: Option<String>,
     pub target: Option<String>,
     #[serde(rename = "conceptMapVersion")]
     pub map_version: Option<String>,
     pub reverse: Option<bool>,
+    #[serde(rename = "_format")]
+    pub format: Option<String>,
 }
-
-/// GET /ConceptMap/$translate?code=...&system=...&target=...
+struct TranslationInput<'a> {
+    url: Option<&'a str>,
+    map_version: Option<&'a str>,
+    inline: Option<&'a serde_json::Value>,
+    codings: Vec<CodedInput<'a>>,
+    source: Option<&'a str>,
+    target: Option<&'a str>,
+    target_system: Option<&'a str>,
+    reverse: bool,
+    dependencies: Vec<term_squid_core::TranslationDependency<'a>>,
+}
+impl<'a> TranslationInput<'a> {
+    fn get(params: &'a TranslateParams) -> Result<Self, AppError> {
+        validate_json_format(params.format.as_deref())?;
+        Ok(Self {
+            url: params.url.as_deref(),
+            map_version: params.map_version.as_deref(),
+            inline: None,
+            codings: vec![CodedInput::primitive(
+                params.system.as_deref(),
+                params.code.as_deref(),
+                params.version.as_deref(),
+                None,
+            )?],
+            source: params.source.as_deref(),
+            target: params.target.as_deref(),
+            target_system: params.target_system.as_deref(),
+            reverse: params.reverse.unwrap_or(false),
+            dependencies: Vec::new(),
+        })
+    }
+    fn post(params: &'a Parameters) -> Result<Self, AppError> {
+        use InputType::*;
+        params.validate_fields(&[
+            ("url", Text, false),
+            ("conceptMapVersion", Text, false),
+            ("conceptMap", Resource, false),
+            ("system", Text, false),
+            ("version", Text, false),
+            ("code", Text, false),
+            ("coding", InputType::Coding, false),
+            ("codeableConcept", CodeableConcept, false),
+            ("source", Text, false),
+            ("target", Text, false),
+            ("targetsystem", Text, false),
+            ("reverse", Boolean, false),
+            ("dependency", Parts, true),
+        ])?;
+        let forms = ["code", "coding", "codeableConcept"]
+            .iter()
+            .filter(|n| params.get_parameter(n).is_some())
+            .count();
+        if forms != 1 {
+            return Err(AppError::BadRequest(
+                "Choose exactly one of code, coding or codeableConcept".into(),
+            ));
+        }
+        let codings = if let Some(p) = params.get_parameter("codeableConcept") {
+            if params.get_parameter("system").is_some() {
+                return Err(AppError::BadRequest(
+                    "system cannot accompany codeableConcept".into(),
+                ));
+            }
+            let Some(ParameterValue::ValueCodeableConcept(concept)) = p.value.as_ref() else {
+                unreachable!("Validated type")
+            };
+            let codings = concept.coding.as_deref().unwrap_or_default();
+            if codings.is_empty() || codings.len() > 64 {
+                return Err(AppError::BadRequest(
+                    "CodeableConcept requires 1..64 codings".into(),
+                ));
+            }
+            codings
+                .iter()
+                .map(|c| {
+                    if c.version
+                        .as_deref()
+                        .zip(params.get_string("version"))
+                        .is_some_and(|(a, b)| a != b)
+                    {
+                        return Err(AppError::BadRequest("Conflicting coding versions".into()));
+                    }
+                    CodedInput::primitive(
+                        c.system.as_deref(),
+                        c.code.as_deref(),
+                        c.version
+                            .as_deref()
+                            .or_else(|| params.get_string("version")),
+                        c.display.as_deref(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![params.coded_input("version")?]
+        };
+        Ok(Self {
+            url: params.get_string("url"),
+            map_version: params.get_string("conceptMapVersion"),
+            inline: params
+                .get_parameter("conceptMap")
+                .and_then(|p| p.resource.as_ref()),
+            codings,
+            source: params.get_string("source"),
+            target: params.get_string("target"),
+            target_system: params.get_string("targetsystem"),
+            reverse: params.get_boolean("reverse").unwrap_or(false),
+            dependencies: dependencies(params)?,
+        })
+    }
+}
 pub async fn translate_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Query(params): Query<TranslateParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    if params.target.is_some() {
-        return Err(AppError::BadRequest(
-            "target ValueSet constraints are not supported; use targetsystem for a system".into(),
-        ));
-    }
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params
-        .system
-        .ok_or_else(|| AppError::BadRequest("system parameter required".to_string()))?;
-
-    perform_translate(
-        store,
-        params.url.as_deref(),
-        params.map_version.as_deref(),
-        &system,
-        &code,
-        params.target_system.as_deref(),
-        params.reverse.unwrap_or(false),
-    )
-    .await
+    perform(&*store, TranslationInput::get(&params)?, None).await
 }
-
-/// POST /ConceptMap/$translate with Parameters body
 pub async fn translate_post(
     State(store): State<Arc<dyn TerminologyStore>>,
-    Json(params): Json<Parameters>,
+    FhirParameters(params): FhirParameters,
 ) -> Result<Json<Parameters>, AppError> {
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params
-        .get_string("system")
-        .or_else(|| params.get_uri("system"))
-        .ok_or_else(|| AppError::BadRequest("system parameter required".to_string()))?;
-    let url = params.get_string("url").or_else(|| params.get_uri("url"));
-    if params.get_string("target").is_some() {
-        return Err(AppError::BadRequest(
-            "target ValueSet constraints are not supported".into(),
-        ));
-    }
-    let target = params.get_string("targetsystem");
-    let reverse = params.get_boolean("reverse").unwrap_or(false);
-
-    perform_translate(
-        store,
-        url,
-        params.get_string("conceptMapVersion"),
-        system,
-        code,
-        target,
-        reverse,
-    )
-    .await
+    perform(&*store, TranslationInput::post(&params)?, None).await
 }
-
-/// GET /ConceptMap/{id}/$translate?code=...&system=...
 pub async fn translate_instance_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<Uuid>,
     Query(params): Query<TranslateParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    if params.target.is_some() {
-        return Err(AppError::BadRequest(
-            "target ValueSet constraints are not supported; use targetsystem for a system".into(),
-        ));
-    }
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params
-        .system
-        .ok_or_else(|| AppError::BadRequest("system parameter required".to_string()))?;
-
-    let plan = store
-        .prepare_concept_map("urn:term-squid:instance", None, Some(id))
-        .await?;
-    translate_plan(
-        &plan,
-        &system,
-        &code,
-        params.target_system.as_deref(),
-        params.reverse.unwrap_or(false),
-    )
+    perform(&*store, TranslationInput::get(&params)?, Some(id)).await
 }
-
-/// POST /ConceptMap/{id}/$translate with Parameters body
 pub async fn translate_instance_post(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<Uuid>,
-    Json(params): Json<Parameters>,
+    FhirParameters(params): FhirParameters,
 ) -> Result<Json<Parameters>, AppError> {
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params
-        .get_string("system")
-        .or_else(|| params.get_uri("system"))
-        .ok_or_else(|| AppError::BadRequest("system parameter required".to_string()))?;
-    if params.get_string("target").is_some() {
+    perform(&*store, TranslationInput::post(&params)?, Some(id)).await
+}
+async fn perform(
+    store: &dyn TerminologyStore,
+    input: TranslationInput<'_>,
+    id: Option<Uuid>,
+) -> Result<Json<Parameters>, AppError> {
+    for (name, value) in [
+        ("url", input.url),
+        ("conceptMapVersion", input.map_version),
+        ("source", input.source),
+        ("target", input.target),
+        ("targetsystem", input.target_system),
+    ] {
+        CodedInput::validate_text(name, value)?;
+    }
+    if input.target.is_some() && input.target_system.is_some() {
         return Err(AppError::BadRequest(
-            "target ValueSet constraints are not supported".into(),
+            "Choose target ValueSet or targetsystem".into(),
         ));
     }
-    let target = params.get_string("targetsystem");
-    let reverse = params.get_boolean("reverse").unwrap_or(false);
-
-    let plan = store
-        .prepare_concept_map("urn:term-squid:instance", None, Some(id))
-        .await?;
-    translate_plan(&plan, system, code, target, reverse)
+    // Inline resource admission is identical for fast and contextual evaluation.
+    if let Some(resource) = input.inline {
+        validate_inline(&input, id, resource)?;
+    }
+    if id.is_none() && input.url.is_none() && input.inline.is_none() {
+        let normalized = input
+            .codings
+            .iter()
+            .map(|c| c.system.map(|_| c.canonical(None)).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        let codes: Vec<_> = normalized
+            .iter()
+            .zip(&input.codings)
+            .map(|(canonical, code)| crate::store::TranslationCode {
+                system: canonical.as_ref().map(|c| c.url.as_str()),
+                version: canonical
+                    .as_ref()
+                    .and_then(|c| c.version.as_deref())
+                    .or(code.version),
+                code: code.code,
+            })
+            .collect();
+        return finish_answers(store.translate_context(context(&input, id, &codes)).await?);
+    }
+    let plan = if let Some(resource) = input.inline {
+        let resource = resource.clone();
+        Arc::new(
+            tokio::task::spawn_blocking(move || {
+                term_squid_core::PreparedConceptMap::prepare(&resource)
+            })
+            .await
+            .map_err(|e| AppError::Internal(e.into()))??,
+        )
+    } else {
+        if id.is_some() && input.url.is_some() {
+            return Err(AppError::BadRequest(
+                "Instance selects the ConceptMap; omit url".into(),
+            ));
+        }
+        store
+            .prepare_concept_map(
+                input.url.unwrap_or("urn:term-squid:instance"),
+                input.map_version,
+                id,
+            )
+            .await?
+    };
+    if id.is_some() && input.map_version.is_some_and(|v| Some(v) != plan.version()) {
+        return Err(AppError::BadRequest(
+            "conceptMapVersion conflicts with instance".into(),
+        ));
+    }
+    let normalized = input
+        .codings
+        .iter()
+        .map(|c| {
+            let system = c
+                .system
+                .or_else(|| plan.input_system(input.reverse))
+                .ok_or_else(|| {
+                    AppError::BadRequest(
+                        "system is required for a ConceptMap with multiple input systems".into(),
+                    )
+                })?;
+            term_squid_core::Canonical::parse(system, c.version).map_err(AppError::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let codes: Vec<_> = normalized
+        .iter()
+        .zip(&input.codings)
+        .map(|(canonical, code)| crate::store::TranslationCode {
+            system: Some(&canonical.url),
+            version: canonical.version.as_deref(),
+            code: code.code,
+        })
+        .collect();
+    if input
+        .source
+        .is_some_and(|v| Some(v) != plan.source_scope(input.reverse))
+        || input
+            .target
+            .is_some_and(|v| Some(v) != plan.target_scope(input.reverse))
+    {
+        return finish_answers(store.translate_context(context(&input, id, &codes)).await?);
+    }
+    let mut answers = BTreeSet::new();
+    for code in &codes {
+        let resolution = plan.translate_resolved(
+            code.system.expect("Normalized input system"),
+            code.version,
+            code.code,
+            input.target_system,
+            input.reverse,
+            &input.dependencies,
+        )?;
+        if !resolution.continuations.is_empty() {
+            return finish_answers(store.translate_context(context(&input, id, &codes)).await?);
+        }
+        for concept in resolution.matches {
+            answers.insert(crate::store::TranslationAnswer {
+                concept,
+                source: plan.url().map(|u| {
+                    plan.version()
+                        .map_or_else(|| u.to_owned(), |v| format!("{u}|{v}"))
+                }),
+            });
+            if answers.len() > 10000 {
+                return Err(AppError::Overloaded);
+            }
+        }
+    }
+    finish_answers(answers.into_iter().collect())
 }
-
-async fn perform_translate(
-    store: Arc<dyn TerminologyStore>,
-    concept_map_url: Option<&str>,
-    map_version: Option<&str>,
-    source_system: &str,
-    source_code: &str,
-    target_system: Option<&str>,
-    reverse: bool,
-) -> Result<Json<Parameters>, AppError> {
-    let url = concept_map_url.ok_or_else(|| {
-        AppError::BadRequest("ConceptMap URL is required; map search is not supported".into())
-    })?;
-    let plan = store.prepare_concept_map(url, map_version, None).await?;
-    translate_plan(&plan, source_system, source_code, target_system, reverse)
+fn context<'a>(
+    input: &'a TranslationInput<'a>,
+    id: Option<Uuid>,
+    codes: &'a [crate::store::TranslationCode<'a>],
+) -> crate::store::TranslationRequest<'a> {
+    crate::store::TranslationRequest {
+        url: input.url,
+        version: input.map_version,
+        id,
+        inline: input.inline,
+        source: input.source,
+        target: input.target,
+        target_system: input.target_system,
+        reverse: input.reverse,
+        codes,
+        dependencies: &input.dependencies,
+    }
 }
-
-fn translate_plan(
-    plan: &term_squid_core::PreparedConceptMap,
-    source_system: &str,
-    source_code: &str,
-    target_system: Option<&str>,
-    reverse: bool,
+fn validate_inline(
+    input: &TranslationInput<'_>,
+    id: Option<Uuid>,
+    resource: &serde_json::Value,
+) -> Result<(), AppError> {
+    if id.is_some() {
+        return Err(AppError::BadRequest(
+            "An instance cannot accompany an inline ConceptMap".into(),
+        ));
+    }
+    if resource["resourceType"] != "ConceptMap" {
+        return Err(AppError::BadRequest(
+            "conceptMap.resource must be a ConceptMap".into(),
+        ));
+    }
+    if let Some(url) = input.url {
+        let expected = term_squid_core::Canonical::parse(url, input.map_version)?;
+        let actual = term_squid_core::Canonical::parse(
+            resource["url"].as_str().ok_or_else(|| {
+                AppError::BadRequest("Anonymous ConceptMap cannot assert a URL".into())
+            })?,
+            resource["version"].as_str(),
+        )?;
+        if expected.url != actual.url || expected.version.is_some_and(|v| Some(v) != actual.version)
+        {
+            return Err(AppError::BadRequest(
+                "Inline ConceptMap identity conflicts with selector".into(),
+            ));
+        }
+    }
+    if input
+        .map_version
+        .is_some_and(|v| resource["version"].as_str() != Some(v))
+    {
+        return Err(AppError::BadRequest(
+            "conceptMapVersion conflicts with inline resource".into(),
+        ));
+    }
+    if serde_json::to_vec(resource)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+        .len()
+        > 256 * 1024
+    {
+        return Err(AppError::BadRequest(
+            "Inline ConceptMap exceeds 256 KiB".into(),
+        ));
+    }
+    Ok(())
+}
+fn dependencies(
+    params: &Parameters,
+) -> Result<Vec<term_squid_core::TranslationDependency<'_>>, AppError> {
+    let mut result = Vec::new();
+    for parameter in params
+        .parameter
+        .iter()
+        .flatten()
+        .filter(|p| p.name == "dependency")
+    {
+        let parts = Parameters::with_parameters(parameter.part.clone().unwrap_or_default());
+        parts.validate_fields(&[
+            ("element", InputType::Text, false),
+            ("concept", InputType::CodeableConcept, false),
+        ])?;
+        // Read from the original request so normalized dependencies borrow no temporary values.
+        let parts = parameter.part.as_deref().unwrap_or_default();
+        let element = parts
+            .iter()
+            .find(|p| p.name == "element")
+            .and_then(|p| match p.value.as_ref()? {
+                ParameterValue::ValueUri(v) => Some(v.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| AppError::BadRequest("dependency.element requires valueUri".into()))?;
+        let concept = parts
+            .iter()
+            .find(|p| p.name == "concept")
+            .and_then(|p| match p.value.as_ref()? {
+                ParameterValue::ValueCodeableConcept(v) => Some(v),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                AppError::BadRequest("dependency.concept requires valueCodeableConcept".into())
+            })?;
+        let codings = concept.coding.as_deref().unwrap_or_default();
+        if codings.is_empty() || codings.len() > 64 {
+            return Err(AppError::BadRequest(
+                "dependency.concept requires 1..64 codings".into(),
+            ));
+        }
+        for coding in codings {
+            let candidate = CodedInput::primitive(
+                coding.system.as_deref(),
+                coding.code.as_deref(),
+                coding.version.as_deref(),
+                coding.display.as_deref(),
+            )?;
+            if result.len() >= 64 {
+                return Err(AppError::BadRequest("Maximum 64 dependency codings".into()));
+            }
+            result.push(term_squid_core::TranslationDependency {
+                element,
+                system: candidate.system,
+                version: candidate.version,
+                code: candidate.code,
+            });
+        }
+    }
+    Ok(result)
+}
+fn finish_answers(
+    answers: Vec<crate::store::TranslationAnswer>,
 ) -> Result<Json<Parameters>, AppError> {
+    let parameters = answers
+        .into_iter()
+        .map(|answer| {
+            let concept = answer.concept;
+            let mut coding = Coding::new(&concept.system, &concept.code);
+            coding.version = concept.version;
+            if let Some(display) = concept.display {
+                coding = coding.with_display(display);
+            }
+            let mut parts = vec![
+                Parameter::code("equivalence", concept.equivalence),
+                Parameter::coding("concept", coding),
+            ];
+            if let Some(source) = answer.source {
+                parts.push(Parameter::uri("source", source));
+            }
+            for product in concept.products {
+                let mut coding =
+                    Coding::new(product.system.as_deref().unwrap_or(""), &product.code);
+                coding.system = product.system;
+                coding.display = product.display;
+                let mut value = Parameter::coding("concept", coding.clone());
+                value.value = Some(ParameterValue::ValueCodeableConcept(
+                    crate::api::parameters::CodeableConcept {
+                        coding: Some(vec![coding]),
+                        text: None,
+                    },
+                ));
+                parts.push(Parameter::part(
+                    "product",
+                    vec![Parameter::uri("element", product.element), value],
+                ));
+            }
+            Parameter::part("match", parts)
+        })
+        .collect();
+    finish(parameters)
+}
+#[cfg(test)]
+type MatchKey<'a> = (&'a str, Option<&'a str>, &'a str, Option<&'a str>, &'a str);
+#[cfg(test)]
+fn append_matches<'a>(
+    parameters: &mut Vec<Parameter>,
+    plan: &'a term_squid_core::PreparedConceptMap,
+    input: &CodedInput<'_>,
+    target: Option<&str>,
+    reverse: bool,
+    seen: &mut BTreeSet<MatchKey<'a>>,
+) -> Result<(), AppError> {
+    let system = input
+        .system
+        .ok_or_else(|| AppError::BadRequest("Coding.system required".into()))?;
     let matches = plan
-        .translate(source_system, source_code, target_system, reverse)
+        .translate_versioned(system, input.version, input.code, target, reverse)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let mut parameters = vec![Parameter::boolean("result", !matches.is_empty())];
-    if matches.is_empty() {
-        parameters.push(Parameter::string(
-            "message",
-            format!("No translation found for code '{source_code}' in system '{source_system}'"),
-        ));
-    }
     for mapped in matches {
-        let mut coding = Coding::new(mapped.system, mapped.code);
-        if let Some(display) = mapped.display {
+        if !seen.insert((
+            mapped.concept.system,
+            mapped.version,
+            mapped.concept.code,
+            mapped.concept.display,
+            mapped.concept.equivalence,
+        )) {
+            continue;
+        }
+        if parameters.len() >= 10000 {
+            return Err(AppError::Overloaded);
+        }
+        let mut coding = Coding::new(mapped.concept.system, mapped.concept.code);
+        coding.version = mapped.version.map(str::to_owned);
+        if let Some(display) = mapped.concept.display {
             coding = coding.with_display(display);
         }
-        parameters.push(Parameter::part(
-            "match",
-            vec![
-                Parameter::code("equivalence", mapped.equivalence),
-                Parameter::coding("concept", coding),
-            ],
+        let mut parts = vec![
+            Parameter::code("equivalence", mapped.concept.equivalence),
+            Parameter::coding("concept", coding),
+        ];
+        if let Some(url) = plan.url() {
+            parts.push(Parameter::uri(
+                "source",
+                plan.version()
+                    .map_or_else(|| url.to_owned(), |v| format!("{url}|{v}")),
+            ));
+        }
+        parameters.push(Parameter::part("match", parts));
+    }
+    Ok(())
+}
+fn finish(mut matches: Vec<Parameter>) -> Result<Json<Parameters>, AppError> {
+    let valid = !matches.is_empty();
+    let mut parameters = vec![Parameter::boolean("result", valid)];
+    if !valid {
+        parameters.push(Parameter::string(
+            "message",
+            "No translation found for the selected code and context",
         ));
     }
+    parameters.append(&mut matches);
     Ok(Json(Parameters::with_parameters(parameters)))
 }
-
+#[cfg(test)]
+fn translate_plan(
+    plan: &term_squid_core::PreparedConceptMap,
+    system: &str,
+    code: &str,
+    target: Option<&str>,
+    reverse: bool,
+) -> Result<Json<Parameters>, AppError> {
+    let mut matches = Vec::new();
+    let input = CodedInput::primitive(Some(system), Some(code), None, None)?;
+    append_matches(
+        &mut matches,
+        plan,
+        &input,
+        target,
+        reverse,
+        &mut BTreeSet::new(),
+    )?;
+    finish(matches)
+}
 #[cfg(test)]
 fn translate_map(
     content: &serde_json::Value,

@@ -333,6 +333,25 @@ pub(super) async fn query(
     request: ValueSetRequest<'_>,
     operation: ValueSetOperation<'_>,
 ) -> Result<ValueSetResult, AppError> {
+    let mut tx = pool.begin().await?;
+    sqlx::Executor::execute(&mut *tx,sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY; SET LOCAL statement_timeout='10s'; SET LOCAL work_mem='4MB'")).await?;
+    let result = query_in_transaction(&mut tx, request, operation).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+pub(super) async fn query_in_transaction(
+    tx: &mut Tx<'_>,
+    request: ValueSetRequest<'_>,
+    operation: ValueSetOperation<'_>,
+) -> Result<ValueSetResult, AppError> {
+    query_options(tx, request, operation, None).await
+}
+pub(super) async fn query_options(
+    tx: &mut Tx<'_>,
+    request: ValueSetRequest<'_>,
+    operation: ValueSetOperation<'_>,
+    options: Option<&super::ExpansionOptions>,
+) -> Result<ValueSetResult, AppError> {
     match operation {
         ValueSetOperation::Expand { offset, count, .. } => {
             super::value_set::check_page(offset, count)?
@@ -358,11 +377,7 @@ pub(super) async fn query(
                 .into(),
         ));
     }
-    let mut tx = pool.begin().await?;
-    // Fixed setup statements share one protocol round trip inside the SQLx transaction.
-    // Transaction drop/rollback still owns cancellation and restores LOCAL settings.
-    sqlx::Executor::execute(&mut *tx,sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY; SET LOCAL statement_timeout='10s'; SET LOCAL work_mem='4MB'")).await?;
-    if inline.is_none() && request.id.is_none() {
+    if inline.is_none() && request.id.is_none() && options.is_none() {
         if let (
             Some(definition),
             ValueSetOperation::Find {
@@ -373,7 +388,7 @@ pub(super) async fn query(
         ) = (snomed::implicit_definition(&root)?, operation)
         {
             let result = super::implicit_membership::find(
-                &mut tx,
+                tx,
                 &root,
                 &definition,
                 request.system_context,
@@ -382,7 +397,6 @@ pub(super) async fn query(
                 code,
             )
             .await?;
-            tx.commit().await?;
             return Ok(result);
         }
     }
@@ -402,14 +416,27 @@ pub(super) async fn query(
         }
         let implicit = snomed::implicit(&key)?.or(loinc::implicit(&key)?);
         let implicit_root = implicit.is_some();
-        let definition = if let Some(i) = inline.as_ref().filter(|_| key == root) {
+        let mut definition = if let Some(i) = inline.as_ref().filter(|_| key == root) {
+            super::options::check_resource_date(
+                &i.resource,
+                options.and_then(|o| o.date.as_deref()),
+            )?;
             remaining -= i.bytes as i64;
             i.resource.clone()
         } else if let Some(implicit) = implicit {
             implicit
+        } else if let Some(options) = options.filter(|o| o.date.is_some()) {
+            super::selection::set(
+                tx,
+                &key,
+                if key == root { request.id } else { None },
+                options.date.as_deref(),
+                &mut remaining,
+            )
+            .await?
         } else {
             let row: Option<(Option<sqlx::types::Json<Value>>,i64)> = sqlx::query_as("SELECT CASE WHEN octet_length(content::text)<=$4 THEN content END,octet_length(content::text)::bigint FROM value_sets WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
-                .bind(&key.url).bind(&key.version).bind(if key == root {request.id} else {None}).bind(remaining).fetch_optional(&mut *tx).await?;
+                .bind(&key.url).bind(&key.version).bind(if key == root {request.id} else {None}).bind(remaining).fetch_optional(&mut **tx).await?;
             let (content, bytes) =
                 row.ok_or_else(|| AppError::NotFound(format!("ValueSet {} not found", key.url)))?;
             remaining -= bytes;
@@ -422,6 +449,9 @@ pub(super) async fn query(
         }
         if key == root {
             resource = definition.clone();
+        }
+        if let Some(options) = options {
+            options.compose(tx, &mut definition).await?;
         }
         let compose: Compose = serde_json::from_value(
             definition
@@ -448,7 +478,7 @@ pub(super) async fn query(
                 }
                 selection_count += 1;
                 let plan = resolve_selection(
-                    &mut tx,
+                    tx,
                     selection,
                     request.system_context,
                     implicit_root,
@@ -481,6 +511,18 @@ pub(super) async fn query(
             },
         );
     }
+    let supplement_ids = if let Some(options) = options.filter(|o| o.display_language.is_some()) {
+        let bases: Vec<_> = nodes
+            .values()
+            .flat_map(|n| n.include.iter().chain(&n.exclude))
+            .filter_map(|p| p.system)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        super::supplements::ids(tx, &bases, options.date.as_deref()).await?
+    } else {
+        Vec::new()
+    };
     let mut order = Vec::new();
     topological(
         &root,
@@ -504,7 +546,32 @@ pub(super) async fn query(
         names.insert(key, name);
     }
     let root_name = &names[&root];
-    compiler.sql.push(format!("matched AS NOT MATERIALIZED (SELECT s.url AS system,s.version,n.code,n.display,n.inactive,s.case_sensitive FROM {root_name} n JOIN code_systems s ON s.id=n.code_system_id WHERE true"));
+    compiler
+        .sql
+        .push("matched AS NOT MATERIALIZED (SELECT s.url AS system,s.version,n.code,");
+    push_display(
+        &mut compiler.sql,
+        options.and_then(|o| o.display_language.as_deref()),
+        &supplement_ids,
+    );
+    compiler.sql.push(format!(" AS display,n.inactive,s.case_sensitive FROM {root_name} n JOIN code_systems s ON s.id=n.code_system_id WHERE true"));
+    if let Some(options) = options {
+        if options.active_only == Some(true) {
+            compiler.sql.push(" AND NOT n.inactive");
+        }
+        for system in &options.exclude_system {
+            let canonical = Canonical::parse(system, None)?;
+            compiler
+                .sql
+                .push(" AND NOT(s.url=")
+                .push_bind(canonical.url)
+                .push(" AND (")
+                .push_bind(canonical.version.clone())
+                .push("::text IS NULL OR s.version IS NOT DISTINCT FROM ")
+                .push_bind(canonical.version)
+                .push("))");
+        }
+    }
     match operation {
         ValueSetOperation::Find {
             system,
@@ -533,9 +600,13 @@ pub(super) async fn query(
                 .sql
                 .push(" AND (strpos(lower(n.code),")
                 .push_bind(filter.clone())
-                .push(")>0 OR strpos(lower(n.display),")
-                .push_bind(filter)
-                .push(")>0)");
+                .push(")>0 OR strpos(lower(");
+            push_display(
+                &mut compiler.sql,
+                options.and_then(|o| o.display_language.as_deref()),
+                &supplement_ids,
+            );
+            compiler.sql.push("),").push_bind(filter).push(")>0)");
         }
         _ => {}
     }
@@ -571,7 +642,7 @@ pub(super) async fn query(
         compiler.sql.push(", (SELECT exceeded FROM page_budget)");
     }
     let (total, page, exceeded, page_exceeded): (i64, sqlx::types::Json<Value>, bool, bool) =
-        compiler.sql.build_query_as().fetch_one(&mut *tx).await?;
+        compiler.sql.build_query_as().fetch_one(&mut **tx).await?;
     if page_exceeded {
         return Err(unsupported(
             "Native response page exceeds 32 MiB budget; request fewer entries",
@@ -605,7 +676,6 @@ pub(super) async fn query(
             abstract_code: false,
         })
         .collect();
-    tx.commit().await?;
     Ok(ValueSetResult::Native(ValueSetPage {
         resource,
         total,
@@ -811,4 +881,16 @@ async fn resolve_selection(
         }
     }
     Ok(plan)
+}
+
+fn push_display(sql: &mut Sql, language: Option<&str>, supplements: &[Uuid]) {
+    if let Some(language) = language {
+        let mut ranges = vec![language.to_lowercase()];
+        while let Some((prefix, _)) = ranges.last().and_then(|s| s.rsplit_once('-')) {
+            ranges.push(prefix.to_owned());
+        }
+        sql.push("COALESCE((SELECT d.term FROM (SELECT d.term,d.language_code,EXISTS(SELECT 1 FROM snomed_language_members l JOIN snomed_releases r ON r.code_system_id=l.code_system_id AND r.dialect=l.refset_id WHERE l.code_system_id=d.code_system_id AND l.description_id=d.id AND l.active AND l.acceptability_id='900000000000548007') AS preferred,d.id::text AS identity FROM snomed_descriptions d WHERE d.code_system_id=s.id AND d.concept_code=n.code AND d.active UNION ALL SELECT designation->>'value',designation->>'language',designation->'use'->>'code'='display',c.id::text FROM code_systems supplement JOIN concepts c ON c.code_system_id=supplement.id CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.designations,'[]')) designation WHERE supplement.id=ANY(").push_bind(supplements.to_vec()).push("::uuid[]) AND split_part(supplement.content->>'supplements','|',1)=s.url AND (split_part(supplement.content->>'supplements','|',2)='' OR split_part(supplement.content->>'supplements','|',2)=s.version) AND (c.code=n.code OR NOT s.case_sensitive AND lower(c.code)=lower(n.code))) d WHERE (lower(d.language_code)=ANY(").push_bind(ranges.clone()).push("::text[]) OR strpos(lower(d.language_code),").push_bind(format!("{}-",language.to_lowercase())).push(")=1) ORDER BY COALESCE(array_position(").push_bind(ranges).push("::text[],lower(d.language_code)),0),d.preferred DESC NULLS LAST,d.identity LIMIT 1),n.display)");
+    } else {
+        sql.push("n.display");
+    }
 }

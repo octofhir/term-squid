@@ -1,5 +1,8 @@
+mod coded_input;
+mod extractors;
 mod operations;
 mod parameters;
+mod protocol;
 mod resources;
 
 use crate::store::TerminologyStore;
@@ -31,12 +34,21 @@ fn create_version_router() -> Router<Arc<dyn TerminologyStore>> {
         // Capability endpoints
         .route("/metadata", get(capability_statement))
         .route("/TerminologyCapabilities", get(terminology_capabilities))
+        .route("/OperationDefinition/{id}", get(operation_definition))
         // Resource endpoints
         .merge(codesystem_routes())
         .merge(valueset_routes())
         .merge(conceptmap_routes())
         // Operation endpoints
         .merge(operation_routes())
+        .fallback(|| async { crate::error::AppError::NotFound("Unknown FHIR endpoint".into()) })
+        .method_not_allowed_fallback(|| async {
+            crate::error::AppError::InvalidInput(
+                axum::http::StatusCode::METHOD_NOT_ALLOWED,
+                "FHIR method not supported for this endpoint".into(),
+            )
+        })
+        .layer(axum::middleware::from_fn(protocol::negotiate))
 }
 
 async fn health_check() -> Json<Value> {
@@ -47,14 +59,16 @@ async fn health_check() -> Json<Value> {
     }))
 }
 
-async fn get_stats(State(store): State<Arc<dyn TerminologyStore>>) -> Json<Value> {
-    let code_systems_count = store.count_code_systems().await.unwrap_or(0);
-    let value_sets_count = store.count_value_sets().await.unwrap_or(0);
-    let concept_maps_count = store.count_concept_maps().await.unwrap_or(0);
+async fn get_stats(
+    State(store): State<Arc<dyn TerminologyStore>>,
+) -> Result<Json<Value>, crate::error::AppError> {
+    let code_systems_count = store.count_code_systems().await?;
+    let value_sets_count = store.count_value_sets().await?;
+    let concept_maps_count = store.count_concept_maps().await?;
 
-    Json(json!({
+    Ok(Json(json!({
         "code_systems": code_systems_count,
         "value_sets": value_sets_count,
         "concept_maps": concept_maps_count
-    }))
+    })))
 }

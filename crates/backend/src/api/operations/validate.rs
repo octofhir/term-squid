@@ -1,26 +1,74 @@
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::State;
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::api::parameters::{Parameter, Parameters};
+use crate::api::{
+    coded_input::CodedInput,
+    extractors::{
+        validate_json_format, FhirJson as Json, FhirParameters, FhirPath as Path,
+        FhirQuery as Query,
+    },
+};
 use crate::error::AppError;
 use crate::store::{TerminologyStore, ValueSetOperation, ValueSetRequest, ValueSetResult};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValidateCodeParams {
+    #[serde(rename = "_format")]
+    pub format: Option<String>,
     pub url: Option<String>,
     pub system: Option<String>,
+    pub date: Option<String>,
+    #[serde(rename = "displayLanguage")]
+    pub language: Option<String>,
+    pub context: Option<String>,
     pub code: Option<String>,
     pub version: Option<String>,
     pub display: Option<String>,
+    #[serde(rename = "abstract")]
+    pub allow_abstract: Option<bool>,
     #[serde(rename = "valueSetVersion")]
     pub value_set_version: Option<String>,
     #[serde(rename = "systemVersion")]
     pub system_version: Option<String>,
+}
+
+impl ValidateCodeParams {
+    pub(super) fn input(
+        &self,
+        value_set: bool,
+        instance: bool,
+    ) -> Result<CodedInput<'_>, AppError> {
+        validate_json_format(self.format.as_deref())?;
+        CodedInput::validate_text("url", self.url.as_deref())?;
+        CodedInput::validate_text("valueSetVersion", self.value_set_version.as_deref())?;
+        if value_set && self.version.is_some()
+            || !value_set && (self.system_version.is_some() || self.value_set_version.is_some())
+        {
+            return Err(AppError::BadRequest(
+                "Use version for CodeSystem, systemVersion/valueSetVersion for ValueSet".into(),
+            ));
+        }
+        if instance && (self.url.is_some() || value_set && self.value_set_version.is_some()) {
+            return Err(AppError::BadRequest(
+                "The instance selects its resource and business version; omit url/valueSetVersion"
+                    .into(),
+            ));
+        }
+        CodedInput::primitive(
+            self.system.as_deref(),
+            self.code.as_deref(),
+            if value_set {
+                self.system_version.as_deref()
+            } else {
+                self.version.as_deref()
+            },
+            self.display.as_deref(),
+        )
+    }
 }
 
 /// GET /CodeSystem/$validate-code?url=...&code=...
@@ -28,79 +76,129 @@ pub async fn validate_code_cs_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Query(params): Query<ValidateCodeParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    let system = params
-        .system
-        .or(params.url)
-        .ok_or_else(|| AppError::BadRequest("system or url parameter required".to_string()))?;
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-
+    if let Some(answer) = super::validation_input::get(&*store, &params, false, None).await? {
+        return Ok(answer);
+    }
+    let input = params.input(false, false)?;
+    let selected = input.canonical(params.url.as_deref())?;
+    if let Some(allow) = params.allow_abstract {
+        return validate_options(
+            &*store,
+            crate::store::ValidationTarget::CodeSystem {
+                url: &selected.url,
+                version: selected.version.as_deref(),
+                id: None,
+                inline: None,
+                alternatives: false,
+            },
+            input,
+            allow,
+        )
+        .await;
+    }
     perform_validate_code(
         store,
-        &system,
-        &code,
-        params.version.as_deref(),
-        params.display.as_deref(),
+        &selected.url,
+        input.code,
+        selected.version.as_deref(),
+        input.display,
     )
     .await
 }
 
-/// POST /CodeSystem/$validate-code with Parameters body
+/// POST /CodeSystem/$validate-code with Parameters body.
 pub async fn validate_code_cs_post(
     State(store): State<Arc<dyn TerminologyStore>>,
-    Json(params): Json<Parameters>,
+    FhirParameters(params): FhirParameters,
 ) -> Result<Json<Parameters>, AppError> {
-    let system = params
-        .get_string("system")
-        .or_else(|| params.get_uri("system"))
-        .or_else(|| params.get_string("url"))
-        .or_else(|| params.get_uri("url"))
-        .ok_or_else(|| AppError::BadRequest("system or url parameter required".to_string()))?;
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let version = params.get_string("version");
-    let display = params.get_string("display");
-
-    perform_validate_code(store, system, code, version, display).await
+    super::validation_input::fields(&params, false, false)?;
+    if let Some(answer) = super::validation_input::complex(&*store, &params, false, None).await? {
+        return Ok(answer);
+    }
+    if params.get_parameter("coding").is_some() && params.get_parameter("url").is_none() {
+        return Err(AppError::BadRequest(
+            "url is required to select the CodeSystem when validating a Coding".into(),
+        ));
+    }
+    let input = params.coded_input("version")?;
+    if params.get_parameter("coding").is_some() {
+        let target = term_squid_core::Canonical::parse(
+            params.get_string("url").expect("Required Coding target"),
+            None,
+        )?;
+        if target
+            .version
+            .as_deref()
+            .zip(input.version)
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Err(AppError::BadRequest(
+                "Coding.version conflicts with the selected CodeSystem URL version".into(),
+            ));
+        }
+    }
+    let selected = input.canonical(params.get_string("url"))?;
+    perform_validate_code(
+        store,
+        &selected.url,
+        input.code,
+        selected.version.as_deref(),
+        input.display,
+    )
+    .await
 }
 
-/// GET /CodeSystem/{id}/$validate-code?code=...
+/// The instance and its asserted coding context are checked in one resolved snapshot.
 pub async fn validate_code_cs_instance_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<Uuid>,
     Query(params): Query<ValidateCodeParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-
-    let resolved = store
-        .resolve_concept_by_id(&id, &code)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-    validate_result(resolved, &code, params.display.as_deref())
+    if let Some(answer) = super::validation_input::get(&*store, &params, false, Some(id)).await? {
+        return Ok(answer);
+    }
+    let input = params.input(false, true)?;
+    if let Some(allow) = params.allow_abstract {
+        return validate_options(
+            &*store,
+            crate::store::ValidationTarget::CodeSystem {
+                url: "urn:term-squid:instance",
+                version: params.version.as_deref(),
+                id: Some(id),
+                inline: None,
+                alternatives: false,
+            },
+            input,
+            allow,
+        )
+        .await;
+    }
+    validate_code_instance(&*store, id, input).await
 }
-
-/// POST /CodeSystem/{id}/$validate-code with Parameters body
 pub async fn validate_code_cs_instance_post(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<Uuid>,
-    Json(params): Json<Parameters>,
+    FhirParameters(params): FhirParameters,
 ) -> Result<Json<Parameters>, AppError> {
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let display = params.get_string("display");
-
+    super::validation_input::fields(&params, false, true)?;
+    if let Some(answer) =
+        super::validation_input::complex(&*store, &params, false, Some(id)).await?
+    {
+        return Ok(answer);
+    }
+    validate_code_instance(&*store, id, params.coded_input("version")?).await
+}
+async fn validate_code_instance(
+    store: &dyn TerminologyStore,
+    id: Uuid,
+    input: CodedInput<'_>,
+) -> Result<Json<Parameters>, AppError> {
     let resolved = store
-        .resolve_concept_by_id(&id, code)
+        .resolve_concept_by_id(&id, input.code)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
-    validate_result(resolved, code, display)
+    input.check_instance(&resolved)?;
+    validate_result(resolved, input.code, input.display)
 }
 
 /// GET /ValueSet/$validate-code?url=...&code=...&system=...
@@ -108,158 +206,159 @@ pub async fn validate_code_vs_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Query(params): Query<ValidateCodeParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    let value_set_url = params
-        .url
-        .ok_or_else(|| AppError::BadRequest("url parameter required for ValueSet".to_string()))?;
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params.system.ok_or_else(|| {
-        AppError::BadRequest("system parameter required for ValueSet validation".to_string())
-    })?;
-
-    perform_validate_code_valueset(
-        store,
-        &value_set_url,
-        params.value_set_version.as_deref(),
-        params.system_version.as_deref(),
-        &system,
-        &code,
-        params.display.as_deref(),
-    )
-    .await
-}
-
-/// POST /ValueSet/$validate-code with Parameters body
-pub async fn validate_code_vs_post(
-    State(store): State<Arc<dyn TerminologyStore>>,
-    Json(params): Json<Parameters>,
-) -> Result<Json<Parameters>, AppError> {
-    let inline = params.inline_value_set(false)?;
-    if inline.is_some() {
-        params.validate_inline_fields(
-            &[
-                "valueSetVersion",
-                "system",
-                "code",
-                "systemVersion",
-                "display",
-            ],
-            &[],
-        )?;
+    if let Some(answer) = super::validation_input::get(&*store, &params, true, None).await? {
+        return Ok(answer);
     }
-    let value_set_url = params
-        .get_string("url")
-        .or_else(|| params.get_uri("url"))
-        .or_else(|| inline.map(|_| "urn:term-squid:inline"))
-        .ok_or_else(|| {
-            AppError::BadRequest("url or valueSet parameter required for ValueSet".to_string())
-        })?;
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params.get_string("system").ok_or_else(|| {
-        AppError::BadRequest("system parameter required for ValueSet validation".to_string())
-    })?;
-    let display = params.get_string("display");
-
-    if let Some(resource) = inline {
-        let system_version = params.get_string("systemVersion");
-        return validate_value_set(
+    let input = params.input(true, false)?;
+    let system = input.canonical(None)?;
+    let url = params
+        .url
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("url parameter required for ValueSet".into()))?;
+    if let Some(allow) = params.allow_abstract {
+        return validate_options(
             &*store,
-            ValueSetRequest {
-                url: value_set_url,
-                version: params.get_string("valueSetVersion"),
+            crate::store::ValidationTarget::ValueSet(ValueSetRequest {
+                url,
+                version: params.value_set_version.as_deref(),
                 id: None,
-                inline: Some(resource),
-                system_context: system_version.map(|v| (system, v)),
-            },
-            system_version,
-            system,
-            code,
-            display,
+                inline: None,
+                system_context: None,
+            }),
+            input,
+            allow,
         )
         .await;
     }
-
     perform_validate_code_valueset(
         store,
-        value_set_url,
-        params.get_string("valueSetVersion"),
-        params.get_string("systemVersion"),
-        system,
-        code,
-        display,
+        url,
+        params.value_set_version.as_deref(),
+        system.version.as_deref(),
+        &system.url,
+        input.code,
+        input.display,
     )
     .await
 }
 
-/// GET /ValueSet/{id}/$validate-code?code=...&system=...
+/// POST /ValueSet/$validate-code supports stored or request-local ValueSets.
+pub async fn validate_code_vs_post(
+    State(store): State<Arc<dyn TerminologyStore>>,
+    FhirParameters(params): FhirParameters,
+) -> Result<Json<Parameters>, AppError> {
+    super::validation_input::fields(&params, true, false)?;
+    if let Some(answer) = super::validation_input::complex(&*store, &params, true, None).await? {
+        return Ok(answer);
+    }
+    let inline = params.inline_value_set(false)?;
+    let input = params.coded_input("systemVersion")?;
+    let system = input.canonical(None)?;
+    let url = params
+        .get_string("url")
+        .or_else(|| inline.map(|_| "urn:term-squid:inline"))
+        .ok_or_else(|| {
+            AppError::BadRequest("url or valueSet parameter required for ValueSet".into())
+        })?;
+    validate_value_set(
+        &*store,
+        ValueSetRequest {
+            url,
+            version: params.get_string("valueSetVersion"),
+            id: None,
+            inline,
+            system_context: system.version.as_deref().map(|v| (system.url.as_str(), v)),
+        },
+        system.version.as_deref(),
+        &system.url,
+        input.code,
+        input.display,
+    )
+    .await
+}
+
+/// Instance ValueSets retain their resource context; Coding.version selects the code system.
 pub async fn validate_code_vs_instance_get(
     State(store): State<Arc<dyn TerminologyStore>>,
     Path(id): Path<Uuid>,
     Query(params): Query<ValidateCodeParams>,
 ) -> Result<Json<Parameters>, AppError> {
-    let code = params
-        .code
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params.system.ok_or_else(|| {
-        AppError::BadRequest("system parameter required for ValueSet validation".to_string())
-    })?;
-
+    if let Some(answer) = super::validation_input::get(&*store, &params, true, Some(id)).await? {
+        return Ok(answer);
+    }
+    let input = params.input(true, true)?;
+    if let Some(allow) = params.allow_abstract {
+        return validate_options(
+            &*store,
+            crate::store::ValidationTarget::ValueSet(ValueSetRequest {
+                url: "urn:term-squid:instance",
+                version: None,
+                id: Some(id),
+                inline: None,
+                system_context: None,
+            }),
+            input,
+            allow,
+        )
+        .await;
+    }
+    validate_value_set_instance(&*store, id, input).await
+}
+pub async fn validate_code_vs_instance_post(
+    State(store): State<Arc<dyn TerminologyStore>>,
+    Path(id): Path<Uuid>,
+    FhirParameters(params): FhirParameters,
+) -> Result<Json<Parameters>, AppError> {
+    super::validation_input::fields(&params, true, true)?;
+    if let Some(answer) = super::validation_input::complex(&*store, &params, true, Some(id)).await?
+    {
+        return Ok(answer);
+    }
+    validate_value_set_instance(&*store, id, params.coded_input("systemVersion")?).await
+}
+async fn validate_value_set_instance(
+    store: &dyn TerminologyStore,
+    id: Uuid,
+    input: CodedInput<'_>,
+) -> Result<Json<Parameters>, AppError> {
+    let system = input.canonical(None)?;
     validate_value_set(
-        &*store,
+        store,
         ValueSetRequest {
             url: "urn:term-squid:instance",
             version: None,
             id: Some(id),
             inline: None,
-            system_context: params
-                .system_version
-                .as_deref()
-                .map(|v| (system.as_str(), v)),
+            system_context: system.version.as_deref().map(|v| (system.url.as_str(), v)),
         },
-        params.system_version.as_deref(),
-        &system,
-        &code,
-        params.display.as_deref(),
+        system.version.as_deref(),
+        &system.url,
+        input.code,
+        input.display,
     )
     .await
 }
 
-/// POST /ValueSet/{id}/$validate-code with Parameters body
-pub async fn validate_code_vs_instance_post(
-    State(store): State<Arc<dyn TerminologyStore>>,
-    Path(id): Path<Uuid>,
-    Json(params): Json<Parameters>,
+async fn validate_options(
+    store: &dyn TerminologyStore,
+    target: crate::store::ValidationTarget<'_>,
+    input: CodedInput<'_>,
+    allow: bool,
 ) -> Result<Json<Parameters>, AppError> {
-    params.inline_value_set(true)?;
-    let code = params
-        .get_string("code")
-        .or_else(|| params.get_code("code"))
-        .ok_or_else(|| AppError::BadRequest("code parameter required".to_string()))?;
-    let system = params.get_string("system").ok_or_else(|| {
-        AppError::BadRequest("system parameter required for ValueSet validation".to_string())
-    })?;
-    let display = params.get_string("display");
-
-    let version = params.get_string("systemVersion");
-    validate_value_set(
-        &*store,
-        ValueSetRequest {
-            url: "urn:term-squid:instance",
-            version: None,
-            id: Some(id),
-            inline: None,
-            system_context: version.map(|v| (system, v)),
-        },
-        version,
-        system,
-        code,
-        display,
-    )
-    .await
+    let canonical = input.system.map(|_| input.canonical(None)).transpose()?;
+    let candidates = [crate::store::ValidationCandidate {
+        system: canonical.as_ref().map(|c| c.url.as_str()),
+        version: canonical
+            .as_ref()
+            .and_then(|c| c.version.as_deref())
+            .or(input.version),
+        code: input.code,
+        display: input.display,
+    }];
+    store
+        .validate_candidates(target, &candidates, allow)
+        .await
+        .map(super::validation_input::answer)
 }
 
 async fn perform_validate_code(
@@ -285,6 +384,11 @@ fn validate_result(
     code: &str,
     display: Option<&str>,
 ) -> Result<Json<Parameters>, AppError> {
+    if resolved.content_mode.as_deref() == Some("supplement") {
+        return Err(AppError::BadRequest(
+            "A supplement URL cannot identify Coding.system".into(),
+        ));
+    }
     if resolved.code.is_none() && resolved.content_mode.as_deref() != Some("complete") {
         return Err(AppError::BadRequest(
             "CodeSystem content is incomplete; membership is unknown".into(),
