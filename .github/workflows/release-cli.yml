@@ -11,6 +11,7 @@ on:
           - patch
           - minor
           - major
+          - none
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,8 +58,24 @@ jobs:
             target/
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Set binary version before building
+        if: inputs.bump_type != 'none'
+        shell: bash
+        run: |
+          python3 - "${{ inputs.bump_type }}" <<'PY'
+          import pathlib, re, sys
+          path = pathlib.Path("Cargo.toml")
+          source = path.read_text()
+          match = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', source, re.M)
+          major, minor, patch = map(int, match.groups())
+          bump = sys.argv[1]
+          version = f"{major + 1}.0.0" if bump == "major" else f"{major}.{minor + 1}.0" if bump == "minor" else f"{major}.{minor}.{patch + 1}"
+          path.write_text(source[:match.start()] + f'version = "{version}"' + source[match.end():])
+          PY
+          cargo metadata --format-version 1 > /dev/null
+
       - name: Build CLI binary
-        run: cargo build --release -p term-squid-cli --target ${{ matrix.target }}
+        run: cargo build --release --locked -p term-squid-cli --target ${{ matrix.target }}
 
       - name: Create release archive
         run: |
@@ -117,6 +134,7 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
 
       - name: Commit version bump
+        if: inputs.bump_type != 'none'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -126,6 +144,7 @@ jobs:
           git tag -a "cli-v${{ steps.bump_version.outputs.new_version }}" -m "CLI release v${{ steps.bump_version.outputs.new_version }}"
 
       - name: Push changes
+        if: inputs.bump_type != 'none'
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -304,7 +304,7 @@ fn read_source(
     }
     ensure!(rows > 0, "LOINC source has no terms");
     let input = reader.into_inner();
-    let sha256 = format!("{:x}", input.sha.finalize());
+    let sha256 = hex::encode(input.sha.finalize());
     ensure!(sha256 == source.sha256, "LOINC source checksum mismatch");
     if !chunk.is_empty() {
         send.blocking_send(chunk)

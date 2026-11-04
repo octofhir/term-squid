@@ -1,4 +1,5 @@
 //! Local resource selection for optional historical and binding-context workflows.
+// Dynamic SQL interpolates only closed table/fragment inventories; external values are bound.
 use super::options;
 use crate::error::AppError;
 use serde_json::Value;
@@ -27,7 +28,7 @@ pub(super) async fn id(
     date: Option<&str>,
 ) -> Result<Uuid, AppError> {
     let sql=format!("SELECT id,content->>'date' FROM {} WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3 IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT {}",family.table(),if date.is_some(){129}else{1});
-    let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(&sql)
+    let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(&key.url)
         .bind(&key.version)
         .bind(instance)

@@ -73,7 +73,7 @@ async fn member(app: &axum::Router, resource: &Value, code: &str) -> (u16, Value
 }
 async fn cleanup(admin: PgPool, pool: PgPool, schema: String) {
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

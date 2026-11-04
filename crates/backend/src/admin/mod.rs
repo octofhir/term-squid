@@ -116,7 +116,7 @@ fn unauthorized() -> ApiError {
     ApiError(StatusCode::UNAUTHORIZED, "Administrator session required")
 }
 pub fn fingerprint(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())

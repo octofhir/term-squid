@@ -1,0 +1,8 @@
+[package]
+name = "term-core-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+term-squid-core = { path = "../../crates/core" }

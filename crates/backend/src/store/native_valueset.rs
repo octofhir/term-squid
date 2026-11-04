@@ -23,7 +23,7 @@ const EXPANSION_WALK: i64 = 1_000_000;
 pub(super) const MEMBERSHIP_WALK: i64 = 8192;
 const INACTIVE: &str = "COALESCE(c.properties,'[]'::jsonb) @> '[{\"code\":\"inactive\",\"valueBoolean\":true}]'::jsonb";
 type Tx<'a> = Transaction<'a, Postgres>;
-type Sql = QueryBuilder<'static, Postgres>;
+type Sql = QueryBuilder<Postgres>;
 pub(super) fn unsupported(message: impl Into<String>) -> AppError {
     AppError::Terminology(term_squid_core::Error(message.into()))
 }
@@ -708,7 +708,7 @@ fn topological(
 }
 /// One release ordering policy shared by generic and specialized native operations.
 pub(super) fn selected_release_sql(
-    sql: &mut QueryBuilder<'static, Postgres>,
+    sql: &mut QueryBuilder<Postgres>,
     version: Option<&str>,
     implicit: bool,
 ) {

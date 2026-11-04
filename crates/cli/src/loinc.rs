@@ -104,7 +104,7 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         "format":manifest.format,"projection":"primary-table-v1","version":manifest.version,
         "sourceSha256":manifest.source.sha256,"expectedConcepts":manifest.expected_concepts
     });
-    let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&identity)?));
+    let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&identity)?));
     let source_path = if manifest.source.path.is_absolute() {
         manifest.source.path.clone()
     } else {

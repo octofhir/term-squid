@@ -21,7 +21,7 @@ fn coding(system: &str, version: &str, code: &str, display: Option<&str>) -> Val
 async fn cleanup(admin: PgPool, pool: PgPool, schema: String, app: Router) {
     drop(app);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

@@ -1,3 +1,4 @@
+// Dynamic SQL interpolates only closed table/fragment inventories; external values are bound.
 use super::*;
 use axum::extract::Path;
 use futures_util::StreamExt;
@@ -88,9 +89,9 @@ async fn cleanup(state: &AdminState) -> anyhow::Result<()> {
         else {
             continue;
         };
-        let active: bool = sqlx::query_scalar(&format!(
+        let active: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT EXISTS(SELECT 1 FROM admin_import_jobs WHERE id=$1 AND state IN {ACTIVE})"
-        ))
+        )))
         .bind(id)
         .fetch_one(&state.pool)
         .await?;
@@ -98,7 +99,7 @@ async fn cleanup(state: &AdminState) -> anyhow::Result<()> {
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
-    sqlx::query(&format!("DELETE FROM admin_import_jobs WHERE state NOT IN {ACTIVE} AND updated_at<NOW()-INTERVAL '7 days'" )).execute(&state.pool).await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM admin_import_jobs WHERE state NOT IN {ACTIVE} AND updated_at<NOW()-INTERVAL '7 days'" ))).execute(&state.pool).await?;
     sqlx::query("DELETE FROM admin_sessions WHERE expires_at<=NOW()")
         .execute(&state.pool)
         .await?;
@@ -161,9 +162,9 @@ pub async fn upload(
     sqlx::query("SELECT pg_advisory_xact_lock(7382916400124)")
         .execute(&mut *tx)
         .await?;
-    let count: i64 = sqlx::query_scalar(&format!(
+    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT count(*) FROM admin_import_jobs WHERE state IN {ACTIVE}"
-    ))
+    )))
     .fetch_one(&mut *tx)
     .await?;
     if count >= 16 {
@@ -193,7 +194,7 @@ pub async fn upload(
         }
         output.flush().await.map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR,"Cannot stage upload"))?;
         output.sync_all().await.map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR,"Cannot persist upload"))?;
-        let sha = format!("{:x}",hash.finalize());
+        let sha = hex::encode(hash.finalize());
         sqlx::query("UPDATE admin_import_jobs SET state='inspecting',bytes=$2,sha256=$3,updated_at=NOW() WHERE id=$1").bind(id).bind(bytes as i64).bind(&sha).execute(&state.pool).await?;
         let parsed = read_inspect(path.clone(), format).await.map_err(|error| { tracing::warn!(%id,%error,"Upload inspection rejected"); ApiError(StatusCode::UNPROCESSABLE_ENTITY,"Invalid or unsupported upload; check R4 metadata, resource definitions and archive limits") })?;
         sqlx::query("UPDATE admin_import_jobs SET state='ready',inspection=$2,updated_at=NOW() WHERE id=$1").bind(id).bind(sqlx::types::Json(&parsed.0.inspection)).execute(&state.pool).await?;
@@ -232,7 +233,7 @@ async fn read_inspect(
             hash.update(&buffer[..count]);
         }
         let parsed = inspect_upload(&path, format)?;
-        Ok((parsed, format!("{:x}", hash.finalize())))
+        Ok((parsed, hex::encode(hash.finalize())))
     })
     .await?
 }

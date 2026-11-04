@@ -122,10 +122,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     if matches!(cli.command, Commands::HashAdminPassword) {
-        use argon2::{
-            password_hash::{rand_core::OsRng, SaltString},
-            Argon2, PasswordHasher,
-        };
+        use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
         use std::io::Read;
         let mut password = String::new();
         std::io::stdin().take(4097).read_to_string(&mut password)?;
@@ -134,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
             (12..=4096).contains(&password.len()),
             "Password must be 12..4096 bytes"
         );
-        let salt = SaltString::generate(&mut OsRng);
+        let salt = SaltString::generate(&mut rand_core::OsRng);
         let hash = Argon2::default()
             .hash_password(password.as_bytes(), &salt)
             .map_err(|_| anyhow::anyhow!("Password hashing failed"))?;

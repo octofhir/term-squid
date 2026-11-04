@@ -57,7 +57,7 @@ fn assert_context(body: &Value, version: &str, display: &str) {
 }
 async fn cleanup(admin: PgPool, pool: PgPool, schema: String) {
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

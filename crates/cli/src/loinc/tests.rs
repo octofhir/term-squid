@@ -90,13 +90,12 @@ impl Fixture {
         }
         let content = writer.into_inner().unwrap();
         std::fs::write(self.source(), &content).unwrap();
-        self.manifest["source"]["sha256"] = format!("{:x}", Sha256::digest(content)).into();
+        self.manifest["source"]["sha256"] = hex::encode(Sha256::digest(content)).into();
         self.save_manifest();
     }
     fn replace_source(&mut self, content: impl AsRef<[u8]>) {
         std::fs::write(self.source(), content.as_ref()).unwrap();
-        self.manifest["source"]["sha256"] =
-            format!("{:x}", Sha256::digest(content.as_ref())).into();
+        self.manifest["source"]["sha256"] = hex::encode(Sha256::digest(content.as_ref())).into();
         self.save_manifest();
     }
 }
@@ -110,7 +109,7 @@ async fn database() -> (PgPool, PgPool, String) {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -120,7 +119,9 @@ async fn database() -> (PgPool, PgPool, String) {
         .after_connect(move |connection, _| {
             let path = path.clone();
             Box::pin(async move {
-                sqlx::query(&path).execute(connection).await?;
+                sqlx::query(sqlx::AssertSqlSafe(path.as_str()))
+                    .execute(connection)
+                    .await?;
                 Ok(())
             })
         })
@@ -135,7 +136,7 @@ async fn database() -> (PgPool, PgPool, String) {
 }
 async fn cleanup(admin: PgPool, pool: PgPool, schema: String) {
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

@@ -8,4 +8,4 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-octofhir-ucum = { version = "=0.9.1", default-features = false }
+octofhir-ucum = { version = "=0.9.3", default-features = false }

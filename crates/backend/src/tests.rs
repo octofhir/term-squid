@@ -1,3 +1,4 @@
+// Dynamic test DDL/search paths below use only generated test_<UUID> identifiers.
 //! Opt-in integration checks against a disposable schema in a local PostgreSQL database.
 use super::*;
 use axum::{body::Body, http::Request};
@@ -81,7 +82,7 @@ async fn subsumption_versions_case_and_atomic_updates() {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -90,7 +91,7 @@ async fn subsumption_versions_case_and_atomic_updates() {
         .after_connect(move |conn, _| {
             let sql = search_path.clone();
             Box::pin(async move {
-                sqlx::query(&sql).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(conn).await?;
                 Ok(())
             })
         })
@@ -331,7 +332,7 @@ async fn subsumption_versions_case_and_atomic_updates() {
     assert_eq!(status, 404);
     assert_eq!(body["resourceType"], "OperationOutcome");
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -344,7 +345,7 @@ async fn terminology_http_versions_compose_and_refresh() {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").expect("TERM_SQUID_TEST_DATABASE_URL");
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -353,7 +354,7 @@ async fn terminology_http_versions_compose_and_refresh() {
         .after_connect(move |conn, _| {
             let sql = search_path.clone();
             Box::pin(async move {
-                sqlx::query(&sql).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(conn).await?;
                 Ok(())
             })
         })
@@ -702,7 +703,7 @@ async fn terminology_http_versions_compose_and_refresh() {
         .after_connect(move |conn, _| {
             let sql = recovery_search_path.clone();
             Box::pin(async move {
-                sqlx::query(&sql).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(conn).await?;
                 Ok(())
             })
         })
@@ -780,7 +781,7 @@ async fn terminology_http_versions_compose_and_refresh() {
         .unwrap();
     assert!(store.expand_compose("urn:set", Some("1")).await.is_err());
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -793,7 +794,7 @@ async fn prepared_translation_versions_updates_and_concurrency() {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -802,7 +803,7 @@ async fn prepared_translation_versions_updates_and_concurrency() {
         .after_connect(move |conn, _| {
             let sql = search_path.clone();
             Box::pin(async move {
-                sqlx::query(&sql).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(conn).await?;
                 Ok(())
             })
         })
@@ -1026,7 +1027,7 @@ async fn prepared_translation_versions_updates_and_concurrency() {
         .await
         .is_err());
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -1037,7 +1038,7 @@ async fn hierarchy_test_database() -> (PgPool, PgPool, String) {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -1046,7 +1047,7 @@ async fn hierarchy_test_database() -> (PgPool, PgPool, String) {
         .after_connect(move |conn, _| {
             let sql = search_path.clone();
             Box::pin(async move {
-                sqlx::query(&sql).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(sql)).execute(conn).await?;
                 Ok(())
             })
         })
@@ -1287,7 +1288,7 @@ async fn hierarchy_projection_freshness_admission_and_eviction() {
         .unwrap()
         .is_none());
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -1383,7 +1384,7 @@ async fn hierarchy_large_folded_projection_and_sql_admission() {
         assert_eq!(result.relationship, Some(true));
     }
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -1588,7 +1589,7 @@ async fn generation_batches_exclude_requests_after_their_sql_snapshot() {
         1
     );
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -1660,7 +1661,7 @@ async fn generation_queue_is_bounded_and_cancelled_waiters_release_capacity() {
         .resolve_subsumption_by_id(&id, "A", "B")
         .await
         .is_err());
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2054,7 +2055,7 @@ async fn prepared_concept_versions_payloads_freshness_and_admission() {
         .unwrap()
         .is_none());
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2178,7 +2179,7 @@ async fn prepared_concept_large_folded_and_bounded_sql_fallback() {
         );
     }
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2446,7 +2447,7 @@ async fn inline_valueset_http_expansion_membership_and_versions() {
     drop(app);
     drop(store);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2502,10 +2503,12 @@ async fn inline_valueset_cache_identity_freshness_and_eviction() {
     }
     // A separate database connection commits a dependency update.
     let mut writer = admin.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL search_path TO {schema}, public"))
-        .execute(&mut *writer)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET LOCAL search_path TO {schema}, public"
+    )))
+    .execute(&mut *writer)
+    .await
+    .unwrap();
     sqlx::query("UPDATE code_systems SET content=jsonb_set(content,'{concept,0,display}','\"Changed\"') WHERE id=$1").bind(system).execute(&mut *writer).await.unwrap();
     writer.commit().await.unwrap();
     let fresh = store.compose_inline(&anonymous, None, None).await.unwrap();
@@ -2528,10 +2531,12 @@ async fn inline_valueset_cache_identity_freshness_and_eviction() {
         Some("Alpha")
     );
     let mut writer = admin.begin().await.unwrap();
-    sqlx::query(&format!("SET LOCAL search_path TO {schema}, public"))
-        .execute(&mut *writer)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET LOCAL search_path TO {schema}, public"
+    )))
+    .execute(&mut *writer)
+    .await
+    .unwrap();
     sqlx::query("UPDATE code_systems SET content=jsonb_set(content,'{concept,0,display}','\"Rolled back\"') WHERE id=$1").bind(system).execute(&mut *writer).await.unwrap();
     writer.rollback().await.unwrap();
     assert!(Arc::ptr_eq(
@@ -2593,7 +2598,7 @@ async fn inline_valueset_cache_identity_freshness_and_eviction() {
     );
     drop(store);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2692,7 +2697,7 @@ async fn inline_valueset_limits_cycles_and_unsupported_content() {
     drop(app);
     drop(store);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2788,7 +2793,7 @@ async fn builtin_ucum_preserves_explicit_stored_versions_and_instances() {
     }
     drop(app);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2959,7 +2964,7 @@ async fn native_snomed_projection_knowledge_versions_and_fresh_hierarchy() {
     drop(app);
     drop(store);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -2988,7 +2993,7 @@ async fn native_snomed_ancestor_limit_never_returns_a_partial_answer() {
         .contains("8192"));
     drop(app);
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

@@ -49,7 +49,7 @@ async fn database() -> (PgPool, Shared, String) {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_admin_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -58,7 +58,9 @@ async fn database() -> (PgPool, Shared, String) {
         .after_connect(move |c, _| {
             let path = path.clone();
             Box::pin(async move {
-                sqlx::query(&path).execute(c).await?;
+                sqlx::query(sqlx::AssertSqlSafe(path.as_str()))
+                    .execute(c)
+                    .await?;
                 Ok(())
             })
         })
@@ -94,7 +96,7 @@ async fn database() -> (PgPool, Shared, String) {
 async fn teardown(admin: PgPool, state: Shared, schema: String) {
     let dir = state.config.as_ref().unwrap().staging.clone();
     state.pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();
@@ -681,10 +683,11 @@ async fn executing_cancellation_and_projection_failure_roll_back_publication() {
     .await;
     assert_eq!(job["state"], "failed");
     for table in ["code_systems", "concepts", "closure_table"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
         assert_eq!(count, 0);
     }
     teardown(admin, state, schema).await;

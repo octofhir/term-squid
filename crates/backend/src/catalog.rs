@@ -1,4 +1,5 @@
 //! Bounded public projections for the browser; independent of admin sessions.
+// Dynamic SQL interpolates only closed table/fragment inventories; external values are bound.
 use crate::error::AppError;
 use axum::{
     extract::{Path, Query, State},
@@ -54,7 +55,7 @@ async fn list(
         .replace('%', "\\%")
         .replace('_', "\\_");
     let sql = format!("WITH matched AS MATERIALIZED (SELECT id,url,version,name,title,status,updated_at FROM {table} WHERE ($1::text IS NULL OR url=$1) AND ($2::text IS NULL OR version=$2) AND (COALESCE(name,'') ILIKE $3 OR COALESCE(title,'') ILIKE $3 OR url ILIKE $3)), page_ids AS (SELECT id FROM matched ORDER BY COALESCE(title,name,url),url,version NULLS FIRST,id LIMIT 25 OFFSET $5), page AS (SELECT {META} AS resource FROM page_ids JOIN {table} USING(id) ORDER BY COALESCE(title,name,url),url,version NULLS FIRST,id) SELECT jsonb_build_object('total',(SELECT count(*) FROM matched),'items',COALESCE((SELECT jsonb_agg(resource) FROM page),'[]'::jsonb))");
-    let result: Value = sqlx::query_scalar(&sql)
+    let result: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(page.url)
         .bind(page.version)
         .bind(format!("%{q}%"))
@@ -70,7 +71,7 @@ async fn detail(
 ) -> Result<Json<Value>, AppError> {
     let table = table(&kind)?;
     let sql = format!("SELECT (content-'concept'-'expansion'-'group') || jsonb_build_object('id',id,'resourceType',$2::text) FROM {table} WHERE id=$1");
-    let mut result: Value = sqlx::query_scalar(&sql)
+    let mut result: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
         .bind(&kind)
         .fetch_optional(&pool)

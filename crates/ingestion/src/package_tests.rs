@@ -201,7 +201,7 @@ async fn supplemental_packages_publish_dependencies_atomically_despite_canonical
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = sqlx::PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .unwrap();
@@ -210,7 +210,9 @@ async fn supplemental_packages_publish_dependencies_atomically_despite_canonical
         .after_connect(move |c, _| {
             let search = search.clone();
             Box::pin(async move {
-                sqlx::query(&search).execute(c).await?;
+                sqlx::query(sqlx::AssertSqlSafe(search.as_str()))
+                    .execute(c)
+                    .await?;
                 Ok(())
             })
         })
@@ -265,7 +267,7 @@ async fn supplemental_packages_publish_dependencies_atomically_despite_canonical
         }
     }
     pool.close().await;
-    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
         .await
         .unwrap();

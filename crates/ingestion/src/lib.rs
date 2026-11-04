@@ -1,4 +1,5 @@
 //! Transactional ingestion shared by the CLI and standalone administration.
+// Dynamic SQL interpolates only closed table/fragment inventories; external values are bound.
 pub mod package;
 mod terminology;
 mod upload;
@@ -202,8 +203,8 @@ pub async fn import_resource(
         _ => anyhow::bail!("Unsupported resource"),
     };
     lock_identity(tx, &meta.resource_type, &meta.url, meta.version.as_deref()).await?;
-    let existing: Option<(Uuid, sqlx::types::Json<Value>)> = sqlx::query_as(&format!(
-        "SELECT id,content FROM {table} WHERE url=$1 AND version IS NOT DISTINCT FROM $2"
+    let existing: Option<(Uuid, sqlx::types::Json<Value>)> = sqlx::query_as(sqlx::AssertSqlSafe(
+        format!("SELECT id,content FROM {table} WHERE url=$1 AND version IS NOT DISTINCT FROM $2"),
     ))
     .bind(&meta.url)
     .bind(&meta.version)
@@ -221,7 +222,7 @@ pub async fn import_resource(
     }
     let id = Uuid::new_v4();
     let sql = format!("INSERT INTO {table} (id,url,version,status,name,title,fhir_version,content) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)");
-    sqlx::query(&sql)
+    sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
         .bind(&meta.url)
         .bind(&meta.version)

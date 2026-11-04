@@ -4,6 +4,8 @@ The user-selected R4 API implementation now covers all 70 declared inputs of six
 
 The branded UI/admin and local-package increments remain implemented; see [the UI report](UI_ADMIN_IMPLEMENTATION_REPORT.md), [the package report](PACKAGE_IMPORT_REPORT.md) and [NEXT_SESSION_UI.md](NEXT_SESSION_UI.md) when changing those areas. Keep the UI live on 5173 when available. The engine/composite continuation below is a separate workstream; preserve its existing changes and measurements.
 
+The delivery is preserved in `d4bb6c1`, following native-provider checkpoint `b426651`, and integrated with the independent `7cef264` dependency release. The combined workspace version is **0.1.3**, with SQLx 0.9, SHA-2 0.11 and UCUM 0.9.3. Read the post-merge validation in the API report; retain both histories and the independent-core CI guard. The user authorized this commit/push; future commits, pushes, publication and deployment still require their own explicit request.
+
 ## Goal and current state
 
 The primary KPI is **first place by the unchanged HealthSamurai TX Benchmark composite**, with direct local Termbox/FHIRsmith comparisons. Do not replace it with synthetic peaks, changed weights, sampled-only clinical imports or historical different-host readings.

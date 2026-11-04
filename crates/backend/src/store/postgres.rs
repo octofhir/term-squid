@@ -779,7 +779,9 @@ impl TerminologyStore for PostgresStore {
         }
 
         // Build the query dynamically
-        let mut query = sqlx::query_as::<_, CodeSystem>(&query_str);
+        // SQL contains only static fragments, generated placeholder indices and
+        // typed numeric pagination. Every text filter is bound below.
+        let mut query = sqlx::query_as::<_, CodeSystem>(sqlx::AssertSqlSafe(query_str));
 
         if let Some(ref url) = params.url {
             query = query.bind(url);
@@ -931,7 +933,9 @@ impl TerminologyStore for PostgresStore {
             query_str.push_str(&format!(" OFFSET {offset}"));
         }
 
-        let mut query = sqlx::query_as::<_, ValueSet>(&query_str);
+        // SQL contains only static fragments, generated placeholder indices and
+        // typed numeric pagination. Every text filter is bound below.
+        let mut query = sqlx::query_as::<_, ValueSet>(sqlx::AssertSqlSafe(query_str));
 
         if let Some(ref url) = params.url {
             query = query.bind(url);
@@ -1085,7 +1089,9 @@ impl TerminologyStore for PostgresStore {
             query_str.push_str(&format!(" OFFSET {offset}"));
         }
 
-        let mut query = sqlx::query_as::<_, ConceptMap>(&query_str);
+        // SQL contains only static fragments, generated placeholder indices and
+        // typed numeric pagination. Every text filter is bound below.
+        let mut query = sqlx::query_as::<_, ConceptMap>(sqlx::AssertSqlSafe(query_str));
 
         if let Some(ref url) = params.url {
             query = query.bind(url);

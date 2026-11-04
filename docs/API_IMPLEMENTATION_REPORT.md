@@ -56,3 +56,19 @@ The UI remains live at `http://127.0.0.1:5173/`, using the final backend on `htt
 The final clean export contains 301 source files. Build-source fingerprints match the working tree; documentation/test evidence is retained alongside it. The immutable backend artifact is `.benchmarks/api-completion/backend-verified-final`, SHA-256 `7e9c265d8aab07a63a06b2f022d3acc02e28e57045c3b5a117cc80829c5e82bb`; CLI SHA-256 `602a3f3dfc33075ef7a5d13a739651ee46565e7b9e843e8a745d1a5c3d65c917`. `delivery-artifacts.json` records toolchain and source checks. Follow-up guards cover version-specific exclusions against versionless native members and regional-language fallback. The standard Vite chunk-size warning remains; all production checks pass.
 
 The stock pinned FHIRsmith UI/auth/import comparison remains documented in [FHIRSMITH_UI_ADMIN_COMPARISON.md](FHIRSMITH_UI_ADMIN_COMPARISON.md). No new performance or clinical-composite comparison is claimed here.
+
+## Integration with dependency release 0.1.3
+
+The user subsequently requested commit and push. Implementation commit `d4bb6c1` retains the complete UI/admin/API delivery on top of native-provider checkpoint `b426651`. Dependency release `7cef264`, independently based on `a016524`, is merged with both histories preserved. No force push, package publication or deployment is part of this request.
+
+The combined workspace is version **0.1.3**: SQLx 0.9, SHA-2 0.11, UCUM 0.9.3, reqwest 0.13 with the existing native TLS/OS trust policy and explicit binary runtime features. The ingestion crate and administrator password bootstrap declare their required Tokio and OS RNG features directly. SHA-256 encodings remain lowercase hexadecimal. Dynamic SQL adaptations interpolate closed identifier/fragment inventories or typed pagination; external values remain bound. The independent-core consumer and CI guard exclude SQL, HTTP, TLS and Tokio dependencies.
+
+Repeated combined validation passes with Rust 1.99.0, Node 24.16.0 and pnpm 10.11.0:
+
+- **147 Rust/PostgreSQL tests, zero ignored**, `merge-tests.log`; all-target Clippy with warnings denied, `merge-clippy.log`; formatting and staged whitespace checks.
+- Independent core consumer and dependency guard, `merge-core-consumer.log` and `merge-core-tree.log`.
+- **29 harness tests / 34,217 assertions**, `merge-harness.log`.
+- Frontend typecheck, lint, two unit tests and production build, `merge-frontend.log`; locked offline release build after frontend generation, `merge-build.log`.
+- **23 embedded production browser/API scenarios**, interrupted JSON/package importer recovery and **7/7 unchanged local FHIR gates**, `merge-production.log`. Desktop/mobile, both themes, keyboard/dialog behavior, session expiry, real imports and rich public operations pass on the merged binaries.
+
+Raw evidence remains under `.benchmarks/api-completion/`. `merge-artifacts.json` records immutable backend `.benchmarks/api-completion/backend-merge-013` SHA-256 `7abcb42ceb8f148f3e814af8b43f4ac21e5a02fdc227196f9f4e9cba66fcb86d` and CLI SHA-256 `ff19e1af3f3ab5e285fa0bc308c1e4c39296c7ebe291c31599646271cb3e6182`. The preview at `http://127.0.0.1:5173/` now uses this 0.1.3 backend on 8081; health, public metadata, anonymous session discovery and JSON API fallback checks are recorded in `merge-preview-verification.json`. The separate production test process on 8082 has stopped. The earlier clean Git-kit install evidence remains applicable: frontend dependency manifests and the pinned package revision are unchanged by this integration. No new performance claim is made.

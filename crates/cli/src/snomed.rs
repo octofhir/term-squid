@@ -115,7 +115,7 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         identities.insert(kind.name(), source.sha256.as_str());
     }
     let identity = serde_json::json!({"format":manifest.format,"editionModule":manifest.edition_module,"release":manifest.release,"dialect":manifest.dialect,"language":manifest.language,"sources":identities});
-    let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&identity)?));
+    let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&identity)?));
     let mut tx = pool.begin().await?;
     sqlx::query("SET LOCAL statement_timeout='15min'")
         .execute(&mut *tx)
@@ -197,7 +197,7 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
 
 async fn require_empty(
     tx: &mut Transaction<'_, Postgres>,
-    query: &str,
+    query: &'static str,
     message: &str,
 ) -> Result<()> {
     let found: bool = sqlx::query_scalar(query).fetch_one(&mut **tx).await?;
@@ -218,7 +218,8 @@ async fn validate_staging(tx: &mut Transaction<'_, Postgres>, manifest: &Manifes
         "rf2_relationships",
         "rf2_language",
     ] {
-        sqlx::query(&format!("ANALYZE {table}"))
+        // Identifiers come exclusively from the fixed staging-table list above.
+        sqlx::query(sqlx::AssertSqlSafe(format!("ANALYZE {table}")))
             .execute(&mut **tx)
             .await?;
     }
