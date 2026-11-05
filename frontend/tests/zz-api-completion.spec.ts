@@ -23,6 +23,7 @@ test('the embedded R4 API executes rich operations on real administrator imports
   const resources=[
     {resourceType:'CodeSystem',url:system,version:'1',status:'active',date:'2020-01-01',content:'complete',hierarchyMeaning:'is-a',concept:[{code:'root',property:[{code:'notSelectable',valueBoolean:true}],concept:[{code:'a',display:'Alpha',definition:'Generated definition',designation:[{language:'ru',use:{system:'urn:use',code:'display'},value:'Альфа'},{language:'ru',value:'Синоним'}]},{code:'b',display:'Bravo'},{code:'inactive',property:[{code:'inactive',valueBoolean:true}]}]}]},
     {resourceType:'ValueSet',url:set,version:'1',status:'active',compose:{include:[{system}]}},
+    {resourceType:'ValueSet',url:set+':ucum',version:'1',status:'active',compose:{include:[{system:'http://unitsofmeasure.org',concept:[{code:'mg'},{code:'mg/dL'}]}]}},
     {resourceType:'ConceptMap',url:map,version:'1',status:'active',sourceUri:set,group:[{source:system,target:system,sourceVersion:'1',targetVersion:'1',element:[{code:'a',target:[{code:'b',equivalence:'equivalent',dependsOn:[{property:'urn:context',system:'urn:kind',value:'in'}],product:[{property:'urn:result',system:'urn:kind',value:'out'}]}]}]}]},
   ]
   for(const resource of resources){
@@ -56,6 +57,19 @@ test('the embedded R4 API executes rich operations on real administrator imports
   const translated=await translation.json()
   expect(parameter(translated,'result').valueBoolean).toBe(true)
   expect(parameter(translated,'match').part).toEqual(expect.arrayContaining([expect.objectContaining({name:'concept',valueCoding:expect.objectContaining({system,version:'1',code:'b'})}),expect.objectContaining({name:'product'}),{name:'source',valueUri:map+'|1'}]))
+  const units=await request.get('/r4/ValueSet/$expand',{params:{url:set+':ucum'}})
+  expect(units.status()).toBe(200)
+  const selectedUnits=await units.json()
+  expect(selectedUnits.expansion.total).toBe(2)
+  expect(selectedUnits.expansion.contains).toEqual(expect.arrayContaining([
+    expect.objectContaining({system:'http://unitsofmeasure.org',version:'2.2',code:'mg',display:'milligram'}),
+    expect.objectContaining({system:'http://unitsofmeasure.org',version:'2.2',code:'mg/dL'}),
+  ]))
+  for(const [code,valid] of [['mg',true],['kg',false]] as const){
+    const member=await request.get('/r4/ValueSet/$validate-code',{params:{url:set+':ucum',system:'http://unitsofmeasure.org',code}})
+    expect(member.status()).toBe(200)
+    expect(parameter(await member.json(),'result').valueBoolean).toBe(valid)
+  }
   const capabilities=await request.get('/r4/metadata?mode=terminology')
   expect(capabilities.status()).toBe(200)
   expect((await capabilities.json()).codeSystem).toEqual(expect.arrayContaining([expect.objectContaining({uri:system})]))

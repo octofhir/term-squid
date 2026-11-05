@@ -1,5 +1,5 @@
 //! Bounded CodeSystem payload snapshots over stored concept projections.
-use super::generation::{GenerationReads, Observation};
+use super::generation::{Family, GenerationReads, Observation};
 use crate::{error::AppError, models::ResolvedConcept};
 use sqlx::PgPool;
 use std::{collections::BTreeMap, sync::Arc};
@@ -39,6 +39,9 @@ enum Snapshot {
     Sql,
 }
 impl Snapshot {
+    fn exact(&self) -> bool {
+        matches!(self, Self::Prepared { metadata, .. } if metadata.case_sensitive)
+    }
     fn resolve(&self, code: &str, observed: &Observation) -> Read {
         match self {
             Self::Sql => Read::Sql,
@@ -125,9 +128,37 @@ impl ConceptPlans {
             return Ok(Read::Sql);
         }
         let key = (root.clone(), id);
-        let observed = generations.concept(code).await?;
-        if let Some(plan) = self.cached(observed.generation, &key).await {
+        let retained = {
+            let cache = self.cache.lock().await;
+            cache
+                .entries
+                .get(&key)
+                .map(|(plan, _)| (cache.generation, Arc::downgrade(plan), plan.exact()))
+        };
+        let exact = retained.as_ref().is_some_and(|(_, _, exact)| *exact);
+        // A retained payload is only a hint until a new SQL observation confirms its
+        // generation. Case-sensitive plans need no PostgreSQL comparison-key folding.
+        // Weak ownership cannot retain retired payloads while SQL checkout is waiting.
+        let observed = if exact {
+            Observation {
+                generation: generations.current(Family::Concept).await?,
+                ..Observation::default()
+            }
+        } else {
+            generations.concept(code).await?
+        };
+        if let Some(plan) = retained
+            .filter(|(generation, _, _)| *generation == observed.generation)
+            .and_then(|(_, plan, _)| plan.upgrade())
+        {
             return Ok(plan.resolve(code, &observed));
+        }
+        if let Some(plan) = self.cached(observed.generation, &key).await {
+            // Another request may have installed a folded plan after our exact hint.
+            // In that case obtain its comparison key in the preparation transaction.
+            if !exact || plan.exact() {
+                return Ok(plan.resolve(code, &observed));
+            }
         }
         let admission = self.preparation.clone().lock_owned().await;
         let mut tx = pool.begin().await?;

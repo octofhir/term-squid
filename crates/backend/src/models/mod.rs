@@ -86,6 +86,8 @@ pub struct ResolvedConcept {
 /// System metadata, normalized codes and hierarchy resolved in one database snapshot.
 #[derive(Debug, sqlx::FromRow)]
 pub struct ResolvedSubsumption {
+    /// Projection observations are usable without claiming a complete authoritative hierarchy.
+    pub complete: bool,
     pub url: String,
     pub version: Option<String>,
     pub hierarchy_meaning: Option<String>,
@@ -100,4 +102,43 @@ pub struct ResolvedSubsumption {
 pub struct ExpandedValueSet {
     pub resource: std::sync::Arc<serde_json::Value>,
     pub members: std::sync::Arc<term_squid_core::PreparedValueSet>,
+    pub sources: std::sync::Arc<ExpansionSources>,
+    pub knowledge: std::sync::Arc<
+        std::collections::BTreeMap<term_squid_core::Canonical, term_squid_core::CodeSystemIndex>,
+    >,
+}
+
+/// Actual selected dependency editions, including dependencies of an empty result.
+#[derive(Clone, Debug, Default)]
+pub struct ExpansionSources {
+    pub systems: std::collections::BTreeSet<term_squid_core::Canonical>,
+    pub value_sets: std::collections::BTreeSet<term_squid_core::Canonical>,
+    pub supplements: std::collections::BTreeSet<term_squid_core::Canonical>,
+}
+impl ExpansionSources {
+    pub fn parameters(&self) -> Vec<serde_json::Value> {
+        let mut result = Vec::new();
+        for (name, values) in [
+            ("used-codesystem", &self.systems),
+            ("used-valueset", &self.value_sets),
+            ("used-supplement", &self.supplements),
+        ] {
+            result.extend(values.iter().map(|key| {
+                let value = key.version.as_ref().map_or_else(
+                    || key.url.clone(),
+                    |version| format!("{}|{version}", key.url),
+                );
+                serde_json::json!({"name":name,"valueUri":value})
+            }));
+        }
+        result
+    }
+    pub fn memory_charge(&self) -> usize {
+        self.systems
+            .iter()
+            .chain(&self.value_sets)
+            .chain(&self.supplements)
+            .map(|key| key.url.len() + key.version.as_ref().map_or(0, String::len) + 256)
+            .sum()
+    }
 }

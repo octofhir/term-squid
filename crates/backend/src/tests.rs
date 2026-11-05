@@ -1034,7 +1034,7 @@ async fn prepared_translation_versions_updates_and_concurrency() {
     admin.close().await;
 }
 
-async fn hierarchy_test_database() -> (PgPool, PgPool, String) {
+pub(crate) async fn hierarchy_test_database() -> (PgPool, PgPool, String) {
     let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
     let admin = PgPool::connect(&url).await.unwrap();
     let schema = format!("test_{}", Uuid::new_v4().simple());
@@ -3017,3 +3017,249 @@ mod coded_input_tests;
 
 #[path = "api_completion_tests.rs"]
 mod api_completion_tests;
+
+#[path = "ecosystem_tests.rs"]
+mod ecosystem_tests;
+
+#[path = "transient_tests.rs"]
+mod transient_tests;
+
+#[path = "finite_semantics_tests.rs"]
+mod finite_semantics_tests;
+
+#[path = "ucum_finite_tests.rs"]
+mod ucum_finite_tests;
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn exact_concept_hints_require_fresh_generation_and_survive_case_changes() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let id = insert_system(&pool, json!({"url":"urn:exact-fresh","version":"1","name":"original","content":"complete","caseSensitive":true,"concept":[{"code":"A","display":"original"}]})).await;
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    assert_eq!(
+        store
+            .resolve_concept_by_id(&id, "A")
+            .await
+            .unwrap()
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("original")
+    );
+    assert!(store
+        .resolve_concept_by_id(&id, "a")
+        .await
+        .unwrap()
+        .unwrap()
+        .code
+        .is_none());
+    let before = store.generation_stats().1;
+    assert!(store
+        .resolve_concept_by_id(&id, "A")
+        .await
+        .unwrap()
+        .unwrap()
+        .code
+        .is_some());
+    assert_eq!(
+        store.generation_stats().1,
+        before + 1,
+        "A warm exact plan must still observe SQL generation"
+    );
+
+    // All readers capture an exact hint before another process changes the source.
+    // Their SQL observation happens after commit, so none may use the old code rule.
+    let dispatch = store.pause_generation(false).await;
+    let mut readers = Vec::new();
+    for _ in 0..16 {
+        let reader = store.clone();
+        readers.push(tokio::spawn(async move {
+            reader.resolve_concept_by_id(&id, "a").await
+        }));
+    }
+    wait_generation_stats(&store, |stats| stats.2 == 16).await;
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE code_systems SET content=jsonb_set(content,'{caseSensitive}','false'),name='folded' WHERE id=$1").bind(id).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE concepts SET display='folded' WHERE code_system_id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(dispatch);
+    for reader in readers {
+        let result = reader.await.unwrap().unwrap().unwrap();
+        assert_eq!(result.code.as_deref(), Some("A"));
+        assert_eq!(result.name.as_deref(), Some("folded"));
+        assert_eq!(result.display.as_deref(), Some("folded"));
+    }
+
+    // Uncommitted changes do not invalidate readers. A later commit changes both
+    // positive and negative results, including the transition back to exact lookup.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE code_systems SET content=jsonb_set(content,'{caseSensitive}','true') WHERE id=$1",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(
+        store
+            .resolve_concept_by_id(&id, "a")
+            .await
+            .unwrap()
+            .unwrap()
+            .code
+            .as_deref(),
+        Some("A")
+    );
+    tx.rollback().await.unwrap();
+    sqlx::query(
+        "UPDATE code_systems SET content=jsonb_set(content,'{caseSensitive}','true') WHERE id=$1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store
+        .resolve_concept_by_id(&id, "a")
+        .await
+        .unwrap()
+        .unwrap()
+        .code
+        .is_none());
+    assert_eq!(
+        store
+            .resolve_concept_by_id(&id, "A")
+            .await
+            .unwrap()
+            .unwrap()
+            .code
+            .as_deref(),
+        Some("A")
+    );
+    sqlx::query("INSERT INTO concepts(code_system_id,code,display) VALUES($1,'a','new exact')")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .resolve_concept_by_id(&id, "a")
+            .await
+            .unwrap()
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("new exact")
+    );
+
+    sqlx::query("UPDATE terminology_generation SET hierarchies_tracked=false")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store.resolve_concept_by_id(&id, "a").await.is_err());
+    sqlx::query("UPDATE terminology_generation SET hierarchies_tracked=true")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "ALTER TABLE terminology_generation RENAME COLUMN generation TO unavailable_generation",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        store.resolve_concept_by_id(&id, "A").await.is_err(),
+        "An exact hint must never hide a failed generation observation"
+    );
+    sqlx::query(
+        "ALTER TABLE terminology_generation RENAME COLUMN unavailable_generation TO generation",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        store
+            .resolve_concept_by_id(&id, "a")
+            .await
+            .unwrap()
+            .unwrap()
+            .display
+            .as_deref(),
+        Some("new exact")
+    );
+    pool.close().await;
+    assert!(store.resolve_concept_by_id(&id, "A").await.is_err());
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn mixed_exact_folded_and_unkeyed_generation_recipients_stay_bound() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    let exact = insert_system(&pool, json!({"url":"urn:batch-exact","content":"complete","caseSensitive":true,"concept":[{"code":"A"},{"code":"B"}]})).await;
+    let folded = insert_system(&pool, json!({"url":"urn:batch-folded","content":"complete","caseSensitive":false,"concept":[{"code":"İ"},{"code":"B"}]})).await;
+    insert_set(
+        &pool,
+        None,
+        json!({"include":[{"system":"urn:batch-exact"}]}),
+    )
+    .await;
+    let lower_i: String = sqlx::query_scalar("SELECT lower('İ')")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let store = Arc::new(PostgresStore::new(pool.clone()));
+    store.resolve_concept_by_id(&exact, "A").await.unwrap();
+    store.resolve_concept_by_id(&folded, "b").await.unwrap();
+    store.expand_compose("urn:set", None).await.unwrap();
+    let before = store.generation_stats().0;
+    let dispatch = store.pause_generation(false).await;
+    let mut readers = Vec::new();
+    for i in 0..24 {
+        let reader = store.clone();
+        let lower_i = lower_i.clone();
+        readers.push(tokio::spawn(async move {
+            let (id, probe, expected) = match i % 4 {
+                0 => (exact, "a", None),
+                1 => (folded, lower_i.as_str(), Some("İ")),
+                2 => (exact, "B", Some("B")),
+                _ => (folded, "b", Some("B")),
+            };
+            assert_eq!(
+                reader
+                    .resolve_concept_by_id(&id, probe)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .code
+                    .as_deref(),
+                expected
+            );
+        }));
+    }
+    let sets = store.clone();
+    let expansion = tokio::spawn(async move { sets.expand_compose("urn:set", None).await });
+    wait_generation_stats(&store, |stats| stats.2 == 25).await;
+    drop(dispatch);
+    for reader in readers {
+        reader.await.unwrap();
+    }
+    assert_eq!(
+        expansion.await.unwrap().unwrap().members.values().count(),
+        2
+    );
+    assert_eq!(store.generation_stats().0, before + 1);
+    pool.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}

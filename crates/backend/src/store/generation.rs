@@ -201,6 +201,9 @@ impl Runner {
                 .started
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let result = match connection {
+                Ok(mut connection) if keys.is_empty() => sqlx::query_as::<_, Batch>(
+                    "SELECT generation,maps_tracked,hierarchies_tracked,ARRAY[]::text[] AS keys FROM terminology_generation WHERE singleton")
+                    .fetch_one(&mut *connection).await,
                 Ok(mut connection) => sqlx::query_as::<_, Batch>(
                     "SELECT generation,maps_tracked,hierarchies_tracked,ARRAY(SELECT lower(value) FROM unnest($1::text[]) WITH ORDINALITY AS inputs(value,ord) ORDER BY ord) AS keys FROM terminology_generation WHERE singleton")
                     .bind(&keys).fetch_one(&mut *connection).await,

@@ -4,13 +4,14 @@ use super::{
     ValueSetRequest, ValueSetResult,
 };
 use crate::error::AppError;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
 use term_squid_core::Canonical;
 use tokio::sync::OwnedSemaphorePermit;
 
 pub struct ExpansionPage {
+    pub sources: std::sync::Arc<crate::models::ExpansionSources>,
     pub resource: Value,
     pub total: i64,
     pub contains: Vec<Value>,
@@ -95,26 +96,27 @@ pub(super) async fn run(
     for member in page.members {
         let mut value = serde_json::to_value(&member).map_err(|e| AppError::Internal(e.into()))?;
         if options.wants_designations() {
-            let rows:Vec<(String,String,String)>=sqlx::query_as("SELECT d.language_code,d.type_id,d.term FROM code_systems s JOIN snomed_descriptions d ON d.code_system_id=s.id WHERE s.url=$1 AND s.version IS NOT DISTINCT FROM $2 AND d.concept_code=$3 AND d.active ORDER BY d.id LIMIT 257")
-                .bind(&member.system).bind(&member.version).bind(&member.code).fetch_all(&mut *tx).await?;
-            if rows.len() > 256 {
-                return Err(AppError::BadRequest(
-                    "Concept designations exceed 256 entries".into(),
-                ));
-            }
-            let mut designations:Vec<_>=rows.into_iter().map(|(language,kind,term)|json!({"language":language,"use":{"system":"http://snomed.info/sct","code":kind},"value":term})).filter(|d|options.designation_matches(d)).collect();
             let base:uuid::Uuid=sqlx::query_scalar("SELECT id FROM code_systems WHERE url=$1 AND version IS NOT DISTINCT FROM $2 ORDER BY updated_at DESC,id LIMIT 1").bind(&member.system).bind(&member.version).fetch_one(&mut *tx).await?;
-            designations.extend(
+            let mut designations: Vec<_> =
+                super::designations::snomed(&mut tx, base, &member.code, false, &mut budget)
+                    .await?
+                    .into_iter()
+                    .filter(|d| options.designation_matches(d))
+                    .collect();
+            super::designations::extend(
+                &mut designations,
                 super::supplements::designations(
                     &mut tx,
                     base,
                     &member.code,
                     options.date.as_deref(),
+                    &mut budget,
                 )
                 .await?
                 .into_iter()
-                .filter(|d| options.designation_matches(d)),
-            );
+                .filter(|d| options.designation_matches(d))
+                .collect(),
+            )?;
             if !designations.is_empty() {
                 value["designation"] = designations.into();
             }
@@ -158,6 +160,7 @@ pub(super) async fn run(
     tx.commit().await?;
     drop(permit);
     Ok(ExpansionPage {
+        sources: std::sync::Arc::new(page.sources),
         resource: page.resource,
         total: page.total,
         contains,
@@ -292,6 +295,7 @@ fn finite(
         contains = nest(contains, &index)?;
     }
     Ok(ExpansionPage {
+        sources: expanded.sources.clone(),
         resource: expanded.resource.as_ref().clone(),
         total,
         contains,

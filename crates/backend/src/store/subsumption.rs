@@ -8,6 +8,7 @@ struct Row {
     url: String,
     version: Option<String>,
     native_provider: Option<String>,
+    complete: bool,
     hierarchy_meaning: Option<String>,
     code_a: Option<String>,
     code_b: Option<String>,
@@ -42,6 +43,7 @@ pub(super) async fn resolve(
             )));
         }
         Ok(ResolvedSubsumption {
+            complete: row.complete,
             url: row.url,
             version: row.version,
             hierarchy_meaning: row.hierarchy_meaning,
@@ -51,4 +53,13 @@ pub(super) async fn resolve(
         })
     })
     .transpose()
+}
+
+pub(crate) fn require_complete(complete: bool) -> Result<(), AppError> {
+    if !complete {
+        return Err(AppError::Terminology(term_squid_core::Error(
+            "Subsumption on an incomplete finite CodeSystem is indeterminate".into(),
+        )));
+    }
+    Ok(())
 }

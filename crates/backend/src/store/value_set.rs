@@ -27,6 +27,7 @@ pub enum ValueSetOperation<'a> {
 }
 #[derive(Debug)]
 pub struct ValueSetPage {
+    pub sources: crate::models::ExpansionSources,
     pub resource: Value,
     pub total: i64,
     pub members: Vec<Member>,

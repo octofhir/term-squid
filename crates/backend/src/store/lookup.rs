@@ -26,6 +26,15 @@ pub(super) async fn run(
     request: LookupRequest<'_>,
     permit: OwnedSemaphorePermit,
 ) -> Result<LookupAnswer, AppError> {
+    if let Some(entry) = super::transient::select(
+        super::transient::Kind::System,
+        request.url,
+        request.version,
+        request.id,
+        request.date,
+    )? {
+        return entry.lookup(&request);
+    }
     let mut permit = Some(permit);
     let cutoff = request.date.map(options::date).transpose()?;
     if let Some(language) = request.language {

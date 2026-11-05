@@ -7,6 +7,7 @@ const MAX_PARAMETERS: usize = 64;
 const MAX_TEXT: usize = 4096;
 
 pub struct CodedInput<'a> {
+    pub origin: crate::store::ValidationInput,
     pub system: Option<&'a str>,
     pub code: &'a str,
     pub version: Option<&'a str>,
@@ -36,6 +37,7 @@ impl<'a> CodedInput<'a> {
             Self::validate_text(name, value)?;
         }
         Ok(Self {
+            origin: crate::store::ValidationInput::Primitive,
             system,
             code: code.ok_or_else(|| AppError::BadRequest("code parameter required".into()))?,
             version,
@@ -205,12 +207,14 @@ impl Parameters {
                     "Coding.version conflicts with the version parameter".into(),
                 ));
             }
-            CodedInput::primitive(
+            let mut input = CodedInput::primitive(
                 coding.system.as_deref(),
                 coding.code.as_deref(),
                 coding.version.as_deref().or(version),
                 coding.display.as_deref(),
-            )
+            )?;
+            input.origin = crate::store::ValidationInput::Coding;
+            Ok(input)
         } else {
             CodedInput::primitive(
                 self.get_string("system"),

@@ -5,6 +5,8 @@ pub struct Config {
     pub database_url: String,
     #[serde(default = "default_max_connections")]
     pub database_max_connections: u32,
+    #[serde(default = "default_prepared_cache")]
+    pub terminology_prepared_cache: bool,
     pub server_host: String,
     pub server_port: u16,
 }
@@ -21,6 +23,8 @@ impl Config {
                 &std::env::var("DATABASE_MAX_CONNECTIONS")
                     .unwrap_or_else(|_| default_max_connections().to_string()),
             )?,
+            terminology_prepared_cache: std::env::var("TERMINOLOGY_PREPARED_CACHE")
+                .map_or(Ok(true), |value| value.parse())?,
             server_host: std::env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             server_port: std::env::var("SERVER_PORT")
                 .unwrap_or_else(|_| "8081".to_string())
@@ -38,6 +42,10 @@ impl Config {
 fn default_max_connections() -> u32 {
     // Measured across common terminology reads; override for a shared DB session budget.
     32
+}
+
+fn default_prepared_cache() -> bool {
+    true
 }
 
 fn parse_max_connections(value: &str) -> anyhow::Result<u32> {
@@ -72,6 +80,7 @@ mod tests {
         });
         let config: Config = serde_json::from_value(input.clone()).unwrap();
         assert_eq!(config.database_max_connections, 32);
+        assert!(config.terminology_prepared_cache);
         assert_eq!(config.bind_address(), "127.0.0.1:8081");
 
         for capacity in [1, 5, 16, 32, 64] {
@@ -79,5 +88,11 @@ mod tests {
             let config: Config = serde_json::from_value(input.clone()).unwrap();
             assert_eq!(config.database_max_connections, capacity);
         }
+        input["terminology_prepared_cache"] = false.into();
+        assert!(
+            !serde_json::from_value::<Config>(input)
+                .unwrap()
+                .terminology_prepared_cache
+        );
     }
 }

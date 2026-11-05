@@ -4,6 +4,7 @@ mod operations;
 mod parameters;
 mod protocol;
 mod resources;
+mod transient;
 
 use crate::store::TerminologyStore;
 use axum::{extract::State, routing::get, Json, Router};
@@ -13,7 +14,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub fn create_router(store: Arc<dyn TerminologyStore>) -> Router {
-    // Create version-specific routers
+    // The verified adapter is R4; legacy URL aliases expose the same R4 contract.
     let version_router = create_version_router();
 
     Router::new()
@@ -22,9 +23,8 @@ pub fn create_router(store: Arc<dyn TerminologyStore>) -> Router {
         .route("/stats", get(get_stats))
         // R4 versioned endpoints
         .nest("/r4", version_router.clone())
-        // R5 versioned endpoints
+        // Legacy aliases do not establish R5/R6 adapter support.
         .nest("/r5", version_router.clone())
-        // R6 versioned endpoints
         .nest("/r6", version_router)
         .with_state(store)
 }

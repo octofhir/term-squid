@@ -27,6 +27,15 @@ pub(super) async fn id(
     instance: Option<Uuid>,
     date: Option<&str>,
 ) -> Result<Uuid, AppError> {
+    let kind = match family {
+        Family::System => super::transient::Kind::System,
+        Family::Set => super::transient::Kind::Set,
+    };
+    if let Some(entry) =
+        super::transient::select(kind, &key.url, key.version.as_deref(), instance, date)?
+    {
+        return Ok(entry.id);
+    }
     let sql=format!("SELECT id,content->>'date' FROM {} WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3 IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT {}",family.table(),if date.is_some(){129}else{1});
     let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(&key.url)
@@ -83,6 +92,16 @@ pub(super) async fn set(
     budget: &mut i64,
 ) -> Result<Value, AppError> {
     let id = id(tx, Family::Set, key, instance, date).await?;
+    if let Some(entry) = super::transient::by_id(id) {
+        super::options::check_resource_date(&entry.resource, date)?;
+        *budget -= entry.bytes as i64;
+        if *budget < 0 {
+            return Err(AppError::BadRequest(
+                "Compose source byte limit exceeded".into(),
+            ));
+        }
+        return Ok((*entry.resource).clone());
+    }
     let (content,bytes):(Option<sqlx::types::Json<Value>>,i64)=sqlx::query_as("SELECT CASE WHEN octet_length(content::text)<=$2 THEN content END,octet_length(content::text)::bigint FROM value_sets WHERE id=$1").bind(id).bind(*budget).fetch_one(&mut **tx).await?;
     *budget -= bytes;
     content
@@ -118,6 +137,7 @@ pub(super) async fn infer_system(
     let mut pending = vec![root.clone()];
     let mut seen = std::collections::BTreeSet::new();
     let mut systems = std::collections::BTreeSet::new();
+    let mut contained = super::contained::ContainedSets::default();
     let mut budget = 4 * 1024 * 1024;
     while let Some(key) = pending.pop() {
         if !seen.insert(key.clone()) {
@@ -130,8 +150,15 @@ pub(super) async fn infer_system(
         }
         let implicit =
             term_squid_core::snomed::implicit(&key)?.or(term_squid_core::loinc::implicit(&key)?);
-        let resource = if let Some(resource) = request.inline.filter(|_| key == root) {
-            resource.clone()
+        let local = contained.is_local(&key);
+        let mut resource = if let Some(resource) = contained.take(&key) {
+            options::check_resource_date(&resource, date)?;
+            resource
+        } else if let Some(resource) = request.inline.filter(|_| key == root) {
+            let inline = super::inline::InlineValueSet::new(resource, request.version)?;
+            options::check_resource_date(&inline.resource, date)?;
+            budget -= inline.bytes as i64;
+            inline.resource
         } else if let Some(implicit) = implicit {
             implicit
         } else {
@@ -144,6 +171,9 @@ pub(super) async fn infer_system(
             )
             .await?
         };
+        if !local {
+            contained.register(&key, &mut resource)?;
+        }
         let compose: term_squid_core::Compose = serde_json::from_value(resource["compose"].clone())
             .map_err(|e| AppError::BadRequest(format!("Invalid compose: {e}")))?;
         for selection in compose.include {

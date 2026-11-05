@@ -13,18 +13,21 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return body as T
 }
-export function useQuery<T>(path: string | null, refresh = 0) {
-  const [state, setState] = useState<{ data?: T; error?: Error; loading: boolean }>({ loading: !!path })
+type QueryState<T> = { data?: T; error?: Error; loading: boolean }
+export function useQuery<T>(path: string | null, refresh = 0): QueryState<T> {
+  const [state, setState] = useState<QueryState<T> & {path: string | null}>({ path, loading: !!path })
   useEffect(() => {
-    if (!path) { setState({ loading: false }); return }
+    if (!path) { setState({ path, loading: false }); return }
     const controller = new AbortController()
-    setState({ loading: true })
-    request<T>(path, { signal: controller.signal }).then(data => setState({ data, loading: false })).catch(error => {
-      if (!controller.signal.aborted) setState({ error, loading: false })
+    setState({ path, loading: true })
+    request<T>(path, { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted) setState({ path, data, loading: false })
+    }).catch(error => {
+      if (!controller.signal.aborted) setState({ path, error, loading: false })
     })
     return () => controller.abort()
   }, [path, refresh])
-  return state
+  return state.path === path ? state : { loading: !!path }
 }
 export interface Resource {
   id: string; resourceType: string; url: string; version?: string; name?: string; title?: string

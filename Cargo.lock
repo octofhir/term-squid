@@ -2493,6 +2493,7 @@ name = "term-squid-core"
 version = "0.1.3"
 dependencies = [
  "octofhir-ucum",
+ "regex-automata",
  "serde",
  "serde_json",
  "thiserror",

@@ -11,6 +11,17 @@ for (const width of [390, 768, 1024, 1440]) for (const colorScheme of ['light', 
       await page.waitForLoadState('networkidle')
       const overflow = await page.evaluate(() => [...document.querySelectorAll('main, #root, .page, body, header')].map(el => ({ tag: el.tagName, class: el.className, client: el.clientWidth, scroll: el.scrollWidth })).filter(x => x.scroll>x.client+1))
       expect(overflow, path).toEqual([])
+      if (width === 390 && path.startsWith('/catalog/')) {
+        const region = page.getByRole('region', {name: path.split('/').length === 3 ? 'Catalog resources' : 'Concept projections', exact: true})
+        await expect(region).toBeVisible()
+        expect(await region.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true)
+        if (path.split('/').length === 3) {
+          expect(await region.locator('tbody td').first().evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(200)
+        }
+        await region.focus(); await page.keyboard.press('ArrowRight')
+        await expect.poll(() => region.evaluate(el => el.scrollLeft)).toBeGreaterThan(0)
+        await region.evaluate(el => { el.scrollLeft = 0 })
+      }
       await page.screenshot({ path: `../.benchmarks/ui-admin/screenshots/${width}-${colorScheme}-${path.split('/').filter(Boolean).join('-') || 'home'}.png`, fullPage: true })
     }
     expect(errors).toEqual([])

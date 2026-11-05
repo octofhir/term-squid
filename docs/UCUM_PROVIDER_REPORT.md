@@ -1,5 +1,7 @@
 # Built-in UCUM grammar provider
 
+Historical provider checkpoint. The later [explicit ValueSet composition report](UCUM_VALUESET_REPORT.md) supersedes its finite-list integration limitation and uses the subsequently locked octofhir-ucum 0.9.3; the original measurements below remain unchanged.
+
 November 3, 2026. term-squid now reuses **`octofhir-ucum = 0.9.1`**, pinned to the same version selected by the local FHIRPath manifest. It is a registry dependency, not a sibling-checkout dependency. Default features are disabled: no CLI, FHIR serialization, regex or fuzzy-search feature is needed by this adapter.
 
 ## Implemented contract

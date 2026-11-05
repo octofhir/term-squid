@@ -1,6 +1,6 @@
 # term-squid Product Development Plan
 
-Status: implementation started; milestones define the proposed delivery order. Updated November 4, 2026.
+Status: implementation started; milestones define the proposed delivery order. Updated November 5, 2026.
 
 term-squid is a standalone terminology product with its own FHIR API, content, storage, CLI and UI. Its internal engine is designed as a Rust library. Embedding it in OctoFHIR or placing terminology data in the OctoFHIR database is outside the current scope.
 
@@ -11,6 +11,8 @@ The first product release prioritizes local code systems, HL7, LOINC and UCUM. F
 For cross-device continuation, start with [NEXT_SESSION.md](NEXT_SESSION.md).
 
 The primary performance KPI is now **first place by the unchanged HealthSamurai TX Benchmark composite**, with direct local Termbox and FHIRsmith comparisons. The earlier 3x FHIRsmith and 12k synthetic targets remain secondary diagnostics, not substitutes for that ranking. See [the pinned baseline and current coverage](HEALTHSAMURAI_BASELINE.md).
+
+The latest API/UI continuation passes **206 Rust/PostgreSQL tests, 38 benchmark harness tests and 25 embedded production browser/API scenarios**. See [the implementation report](REQUEST_CONTEXT_REPORT.md), [independent general-mode gap audit](ECOSYSTEM_GAP_AUDIT.md) and [final matched performance report](REQUEST_CONTEXT_PERFORMANCE.md). The latter retains all 120 warm-suite windows and 37,208,534 response checks; [four separate mixed-context cohorts](CONTEXT_MIXED_REPORT.md) retain 105,600 checks. Keep all reported regressions and the remaining conformance/content gaps. These finite/package diagnostics do not replace the unchanged clinical composite below.
 
 Current upstream preflight coverage is **2/20** on synthetic + R4 core content; no comparable clinical composite has been measured. The published leaders are Termbox 100.00, Hades 79.20 and FHIRsmith 31.96. These historical scores are not measurements on our machine. The local [dashboard](http://127.0.0.1:4100/tx-benchmark/local/) keeps published scores, coverage and actual synthetic charts separate.
 
@@ -71,7 +73,7 @@ The following [prepared CodeSystem-read increment](CONCEPT_READS_REPORT.md) adds
 
 Remaining work:
 
-1. Connect the ecosystem runner to CI for selected R4/general scenarios and define how its test resources are loaded.
+1. The [pinned official R4 `case` gate](ECOSYSTEM_R4_REPORT.md) now connects the Java matcher to CI with a documented preloaded-content profile and both retention modes. Extend independent coverage beyond the six selected cases; bounded original `tx-resource` setup now passes on an empty database in both retention modes; see [the context report](REQUEST_CONTEXT_REPORT.md). Broader independent general-mode coverage remains incomplete.
 2. Complete the R4 parameter/semantic contract and maintain a requirements matrix beyond the synthetic preflights.
 3. Extend bounded finite-plan reuse with shared CodeSystem snapshots, finer admission and dependency-specific generations; add larger and mixed-load comparisons.
 4. Check correctness in CI; run absolute performance comparisons on a stable dedicated machine.
@@ -98,7 +100,7 @@ Display handling, language, inactive/abstract concepts, supplements, case sensit
 
 Acceptance: local preflights pass; selected ecosystem scenarios produce the same correct results with caching enabled and disabled. Contract completeness is tracked in [the API requirements matrix](API_REQUIREMENTS.md), not just the small local suite.
 
-The [R4 API implementation](API_IMPLEMENTATION_REPORT.md) now covers all **70 top-level inputs of six declared operations**, typed/CodeableConcept/inline workflows, one-snapshot validation, date/language/designation semantics, expansion version/context directives, bounded mapping rules and CodeSystem supplements. The pinned [contract inventory](R4_API_CONTRACT.json) links positive acceptance evidence. Current Rust/PostgreSQL validation passes 147 tests. Dynamic terminology metadata and local OperationDefinition resources describe actual behavior. The final embedded build passes 23 browser/API scenarios, JSON/package restart recovery and all seven unchanged local gates; see the report for raw evidence and toolchain. Provider/registry bounds remain explicit, and clinical corpus/composite goals remain separate; this does not assert unrestricted FHIR support. Apply migration `20261104000006_supplements`.
+The [R4 API implementation](API_IMPLEMENTATION_REPORT.md) now covers all **70 top-level inputs of six declared operations**, typed/CodeableConcept/inline workflows, one-snapshot validation, date/language/designation semantics, expansion version/context directives, bounded mapping rules and CodeSystem supplements. The pinned [contract inventory](R4_API_CONTRACT.json) links positive acceptance evidence. That API-delivery checkpoint passed 147 Rust/PostgreSQL tests. The subsequent [request-context and finite-semantics increment](REQUEST_CONTEXT_REPORT.md) passes 206 tests with zero ignored, including concurrent edition-activation/display checks; it also preserves all seventy declared inputs. Dynamic terminology metadata and local OperationDefinition resources describe actual behavior. The [independent general-mode audit](ECOSYSTEM_GAP_AUDIT.md) remains 110/689 versus 682/689 on the pinned reference; the declared-input inventory is not unrestricted certification. The final embedded build passes 25 browser/API scenarios, JSON/package restart recovery and all seven unchanged local gates; see the report for raw evidence and toolchain. Provider/registry bounds remain explicit, and clinical corpus/composite goals remain separate; this does not assert unrestricted FHIR support. Apply migration `20261104000006_supplements`.
 
 ## Milestone 2: Library Engine and Prepared Data
 
@@ -121,7 +123,7 @@ Acceptance: operations execute through the engine; frequent simple validations n
 |---|---|
 | Local code systems | Recursive concepts, typed properties, designations, languages, mappings and controlled updates |
 | HL7 | Core/THO/IG packages with dependencies, defined source precedence, pinned versions and provenance |
-| UCUM | Canonical grammar lookup/validation and Rust comparability now use pinned `octofhir-ucum` 0.9.1 / model 2.2. Complete finite ValueSet/provider integration and ecosystem cases; a common-units list does not replace the grammar |
+| UCUM | Canonical grammar lookup/validation and Rust comparability now use pinned `octofhir-ucum` 0.9.3 / model 2.2. The [explicit UCUM increment](UCUM_VALUESET_REPORT.md) implements bounded finite lists with the real grammar; complete implicit ValueSet/provider integration and ecosystem cases; a common-units list does not replace the grammar |
 | LOINC | Import the official release: axes, class, status, names, languages, Parts, hierarchy, Answer Lists and Groups; capabilities declare supported properties and filters |
 
 Imports record version, checksum and source. Load data in streams or batches rather than one SQL round trip per concept. An incomplete import never becomes active. Materialize large expansions as needed within memory limits. Clinical source data stays out of Git; version manifests and permitted test fixtures belong in Git.
@@ -130,9 +132,11 @@ Acceptance: reproducible content updates and rollback; correct selected HL7/LOIN
 
 ## Milestone 4: Demonstrated Speedup over FHIRsmith
 
+The [post-API local FHIRsmith comparison](FHIRSMITH_API_COMPARISON.md) now measures delivered 0.1.3 against pinned FHIRsmith 0.18.2: 40 windows, 10,795,783 passing response checks, six common finite scenarios at 1/10/50 VU and a reverse-order loaded repeat. term-squid wins the six common 50-VU points, but single-client lookup/subsumption/translation still lose; lookup reference variability and the expansion concurrency plateau remain explicit. The selected differential API checks pass 44/44 on term-squid and 34/44 on the configured reference; optional capability/policy differences are not a global conformance ranking. Fresh upstream coverage remains 2/20 versus 3/20 on the incomplete corpus. Standard `targetsystem` translation passes on both; the upstream helper's CodeSystem URI in `target` remains an explicit compatibility decision. This increment does not satisfy the clinical composite or overall 3x acceptance criteria.
+
 Primary target: lead the original HealthSamurai composite with unchanged weights and verified clinical coverage, including direct local Termbox/FHIRsmith comparisons. The secondary target remains at least 3x FHIRsmith throughput on the agreed priority suite without exceeding the agreed p99 limit or reducing response semantics. Neither overall target is achieved. The original scorer/protocol is now pinned and reproducible; do not change weights or omit slow scenarios to inflate results.
 
-The user reports approximately 12,000 RPS for complex CRUD operations in OctoFHIR. Exceeding that throughput on simple terminology lookup/validation is a product target to verify on a defined workload. The batching and prepared-CodeSystem increments now exceed 12,000 RPS on synthetic lookup, CodeSystem/ValueSet validation, subsumption and forward translation at 50 VU. Single-client, clinical and mixed workloads still need their own evidence; these are not general capacity guarantees. Complex expansions require separate targets.
+The user reports approximately 12,000 RPS for complex CRUD operations in OctoFHIR. Exceeding that throughput on simple terminology lookup/validation is a product target to verify on a defined workload. The batching and prepared-CodeSystem increments now exceed 12,000 RPS on synthetic lookup, CodeSystem/ValueSet validation, subsumption and forward translation at 50 VU. Single-client and clinical workloads still need their own evidence; these are not general capacity guarantees. The [matched mixed-context diagnostic](CONTEXT_MIXED_REPORT.md) now records fixed-arrival cold work alongside ordinary lookup, including its remaining expansion deficit and candidate-versus-baseline regressions. Complex expansions require separate targets.
 
 Priority workloads: finite and filtered ValueSet membership, LOINC lookup/search, UCUM, paginated expansion, negative results, different versions and languages. Add large local code systems, inline CodeSystem/ValueSet inputs, imported sets and cold plan preparation. Do not limit comparisons to repeatedly querying one code.
 

@@ -47,7 +47,7 @@ DATABASE_URL='postgresql://benchmark:benchmark@127.0.0.1:15433/term_squid_benchm
   bun benchmarks/bench.ts seed
 ```
 
-Import goes through the existing CLI, since the REST API has no resource write interface. It creates 10,000 synthetic child concepts, a root, 128 target concepts, a 255-member ValueSet after exclusion, and a ConceptMap with 128 mappings. The fixed `http://example.org/term-squid-benchmark/` canonicals are only benchmark data. Re-import of the same version is idempotent. Bump the fixture version when changing its semantics; the CLI intentionally does not replace existing canonicals with the same version.
+Benchmark setup imports through the shared CLI ingestion path. The public FHIR REST API remains read-only; protected administrator uploads use the separate job API. It creates 10,000 synthetic child concepts, a root, 128 target concepts, a 255-member ValueSet after exclusion, and a ConceptMap with 128 mappings. The fixed `http://example.org/term-squid-benchmark/` canonicals are only benchmark data. Re-import of the same version is idempotent. Bump the fixture version when changing its semantics; the CLI intentionally does not replace existing canonicals with the same version.
 
 ## Correctness gates and current gaps
 
@@ -87,6 +87,36 @@ LOINC, SNOMED, RxNorm, VSAC and other upstream scenarios need the corresponding 
 
 Targets are restricted to loopback by default. `--allow-remote` explicitly enables testing your own remote server. Do not apply load to public community servers.
 
+## Differential API checks against local FHIRsmith
+
+The November 5 [source-frozen matched performance report](../docs/REQUEST_CONTEXT_PERFORMANCE.md) and [mixed-context diagnostic](../docs/CONTEXT_MIXED_REPORT.md) retain the latest paired windows, protocol and regressions. The [general-mode gap audit](../docs/ECOSYSTEM_GAP_AUDIT.md) keeps all official failures separate from selected product expectations.
+
+The [post-API comparison report](../docs/FHIRSMITH_API_COMPARISON.md) records the pinned reference, configuration, actual differences and matched measurement conditions. The differential driver sends identical read requests to both local servers and stores complete responses, including reference failures:
+
+```sh
+bun benchmarks/compare-api.ts --left http://127.0.0.1:18081/r4 \
+  --right http://127.0.0.1:17003/tx/r4 \
+  --output .benchmarks/UNIQUE-api-comparison
+```
+
+Load the unchanged generated fixtures on both servers and configure FHIRsmith's documented `ucum:` source with a real UCUM 2.2 essence file before comparing UCUM. The driver retains all 17 probes from the seven original local gates, with additional Coding/CodeableConcept, inline, language, GET/POST, filter and UCUM checks. A failed term-squid expectation makes the command fail; reference differences remain evidence. These selected contract checks are not the official ecosystem suite or a global conformance score. Optional input support and text-search policy differences require interpretation; an unavailable terminology must not count as a valid negative. Failing semantic scenarios never receive comparative speed scores. Raw responses must stay under `.benchmarks/`, and output files are not overwritten.
+
+## Selected official R4 ecosystem gate
+
+The selected official HL7 gate is documented in [REQUEST_CONTEXT_REPORT.md](../docs/REQUEST_CONTEXT_REPORT.md), superseding the initial preloaded-only [checkpoint](../docs/ECOSYSTEM_R4_REPORT.md). The ecosystem package and Java runner are SHA-256 pinned and retain their real R4 converter/matcher. The complete six-test `case` suite runs first with its original `tx-resource` setup on an **empty disposable database**, with retention on and off and zero persisted resource counts before/after. The smoke driver then imports the official setup and synthetic resources through the real CLI and runs the preloaded profile plus seven unchanged local gates in both modes. Requests, goldens and assertions remain unchanged. Recreate the disposable database before repeating the complete smoke sequence.
+
+```sh
+# Optional official-gate prerequisites: Python 3.12+ and Java 17+.
+python3 -B -m unittest discover -s benchmarks/ecosystem -p 'test_*.py'
+python3 -B benchmarks/ecosystem.py prepare
+python3 -B benchmarks/ecosystem_smoke.py \
+  --database-url 'postgresql://benchmark:benchmark@127.0.0.1:15433/FRESH_DISPOSABLE_DATABASE' \
+  --backend "$PWD/.benchmarks/target/release/backend" \
+  --cli "$PWD/.benchmarks/target/release/term-squid-cli"
+```
+
+Create the disposable database first, and build the frontend before the embedded release. The smoke driver imports the official setup and unchanged synthetic fixtures, runs the selected suite plus seven local gates with `TERMINOLOGY_PREPARED_CACHE=true` and `false`, and stops its backend processes. Results stay under `.benchmarks/`. No load test or complete-clinical score is performed by this workflow.
+
 ## Results and comparison
 
 All generated files stay under ignored `.benchmarks/`:
@@ -110,7 +140,7 @@ JSON-encoded file-name/source tuples for `bench.ts`, `local/cases.js` and `local
 in that order. This distinguishes dirty runners at the same commit and separates workload
 changes from fixture changes. Use the same harness fingerprint for matched local comparisons.
 
-Warmup results are discarded from the reported measurements. Missing or invalid scenarios receive no real speed reading. Compare matching tests, datasets, content versions, response sizes, concurrency, hardware and resource limits. The optional `observe.py` wrapper samples server CPU/RSS. Open-arrival-rate tests remain unimplemented. The original composite scorer is now available through the commands below; its weighted totals are not per-operation RPS.
+Warmup results are discarded from the reported measurements. Missing or invalid scenarios receive no real speed reading. Compare matching tests, datasets, content versions, response sizes, concurrency, hardware and resource limits. The optional `observe.py` wrapper samples server CPU/RSS. The original suites use closed VU concurrency; the separate generated mixed-context diagnostic below uses fixed arrival rates. The original composite scorer is now available through the commands below; its weighted totals are not per-operation RPS.
 
 ## Original composite and local graphs
 
@@ -350,3 +380,38 @@ The separate generated version `99.0` / 100,005-row schema and measurements unde
 The benchmark dashboard remains separate from the application UI. See [the UI/admin implementation report](../docs/UI_ADMIN_IMPLEMENTATION_REPORT.md) for the fixed Git dependency, bootstrap configuration and build ordering. Public FHIR GET/POST operations remain anonymous. Benchmark seeding still uses the CLI; authenticated HTTP imports are a separate bounded workflow and must not alter the matched benchmark corpus.
 
 `ui_admin_smoke.py` validates a release binary against an explicitly disposable loopback database. Generate fixtures first, install Playwright Chromium in `frontend/`, then provide the database URL and optional backend/CLI binary paths. It also exercises [typed public Coding contracts](../docs/API_CODING_REPORT.md), including a lookup primed negative before a package activation. It checks real JSON/package crash/restart recovery (including a package interrupted after an earlier resource write), browser workflows and the unchanged seven local gates. Package fixtures cover atomic activation, public expansion and keyboard-accessible mobile tables in both themes. See [package limits and lifecycle](../docs/PACKAGE_IMPORT_REPORT.md). Keep these builds/browser checks separate from measured load. All evidence and ephemeral credentials remain below `.benchmarks/ui-admin/`; do not publish the private smoke/staging directories as CI artifacts.
+
+
+The optional explicit-UCUM profile preserves the original 44 differential probes and adds five finite grammar-list checks (expansion, membership, outside code, exclusion and union with the installed fixture):
+
+```sh
+bun benchmarks/compare-api.ts --left http://127.0.0.1:18081/r4 \
+  --right http://127.0.0.1:17003/tx/r4 --ucum-lists \
+  --output .benchmarks/UNIQUE-api-ucum-comparison
+```
+
+Both participants need the same synthetic package, complete R4 core and bundled UCUM 2.2 source. These selected expectations are not a global conformance ranking. See [the explicit UCUM report](../docs/UCUM_VALUESET_REPORT.md) for bounds and [the request-context report](../docs/REQUEST_CONTEXT_REPORT.md) for the complete independent audit and final build evidence.
+
+
+[Matched mixed-context evidence](../docs/CONTEXT_MIXED_REPORT.md) uses a separate fixed-arrival harness and output directory:
+
+```sh
+bun benchmarks/context-mixed.ts --url http://127.0.0.1:18081/r4 \
+  --name term-squid --run-id UNIQUE-mixed --heavy-rate 8 --duration 30s \
+  --server-revision SOURCE_REVISION
+```
+
+The unchanged lookup predicate runs at 100 requests/s while cold public POST expansions run at the selected 0–32 requests/s. Each expansion supplies a unique request-local 3,000-concept, 30-level generated CodeSystem and requests one bounded page. The exact measured lookup trace is warmed at concurrency 20 before each window; request identity uses the global scenario iteration, independent of VU scheduling. Every response is checked. Admission requires exact request counts, no missing arrivals, no HTTP/semantic failures and complete latency data. End-boundary executor callbacks are recorded without generating extra requests; admission assertions remain exact. Generated bodies and logs stay under `.benchmarks/context-mixed/`, separate from dashboard/scorer results. Run sequential local participants with identical fixtures, rates, toolchain and process limits, and preserve reverse-order repeats. This is a synthetic isolation/cold-work diagnostic, not a clinical composite or capacity guarantee. Profiling windows must be identified separately and excluded from speed comparisons.
+
+
+## Generated finite semantic differential
+
+[The finite-model report](../docs/FINITE_DIFFERENTIAL_REPORT.md) records an additional deterministic, request-local comparison. It uses independent heap/set expectations and complete response predicates, including negative results and context release. It does not change original goldens, local gates, dashboard results or scoring.
+
+```sh
+bun benchmarks/finite-differential.ts --left http://127.0.0.1:18081/r4 \
+  --right http://127.0.0.1:17003/tx/r4 --seeds 16 \
+  --output .benchmarks/UNIQUE-finite-model
+```
+
+Only loopback targets are accepted. Every scenario has a real positive; all response bodies and fixtures are retained. Run outside performance windows. Capability/policy differences require interpretation rather than a global conformance ranking.

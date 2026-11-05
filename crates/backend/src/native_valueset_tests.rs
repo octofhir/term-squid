@@ -742,3 +742,85 @@ async fn finite_dispatch_borrows_shared_plans_and_preserves_old_generations() {
     drop(store);
     cleanup(admin, pool, schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn contained_valuesets_use_the_same_bounded_native_projection_path() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    fixture(&pool).await;
+    let app = api::create_router(Arc::new(PostgresStore::new(pool.clone())));
+    let resource = json!({"resourceType":"ValueSet","status":"active","contained":[{"resourceType":"ValueSet","id":"native","status":"active","compose":{"include":[selection("is-a","1")]}}],"compose":{"include":[{"valueSet":["#native"]}]}});
+    let (status, body) = expand(&app, resource.clone(), vec![]).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(codes(&body), ["1", "2", "3"]);
+    assert_eq!(body["contained"], resource["contained"]);
+    assert!(!body.to_string().contains("urn:term-squid:contained:"));
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/r4/ValueSet/$validate-code",
+        inline_parameters(
+            resource.clone(),
+            vec![json!({"name":"code","valueCode":"2"})],
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "Inferred native contained context: {body}");
+    assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+    for (code, valid) in [("2", true), ("5", false)] {
+        let (status, body) = member(&app, &resource, code).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(parameter(&body, "result")["valueBoolean"], valid);
+    }
+    drop(app);
+    cleanup(admin, pool, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn native_required_supplements_are_checked_even_without_language_enrichment() {
+    let (admin, pool, schema) = hierarchy_test_database().await;
+    fixture(&pool).await;
+    let mut definition = inline(json!([selection("is-a", "1")]), json!([]));
+    definition["extension"] = json!([{"url":"http://hl7.org/fhir/StructureDefinition/valueset-supplement","valueCanonical":"urn:native:required"}]);
+    let stores = [
+        Arc::new(PostgresStore::new(pool.clone())),
+        Arc::new(PostgresStore::without_prepared_cache(pool.clone())),
+    ];
+    for available in [false, true] {
+        if available {
+            let source = json!({"resourceType":"CodeSystem","url":"urn:native:required","version":"1","status":"active","date":"2026-02-01","content":"supplement","supplements":format!("{SYSTEM}|{VERSION}"),"concept":[{"code":"1","designation":[{"language":"ru","value":"Native required alias"}]}]});
+            let inspection = term_squid_ingestion::inspect(&source).unwrap();
+            let mut tx = pool.begin().await.unwrap();
+            term_squid_ingestion::import_resource(&mut tx, &source, &inspection)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+        for store in &stores {
+            let app = api::create_router(store.clone());
+            for extra in [
+                vec![],
+                vec![json!({"name":"displayLanguage","valueCode":"ru"})],
+            ] {
+                let (status, body) = expand(&app, definition.clone(), extra).await;
+                assert_eq!(status, if available { 200 } else { 422 }, "{body}");
+                if available {
+                    assert_eq!(body["expansion"]["total"], 3);
+                    assert!(body["expansion"]["parameter"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|p| p["name"] == "used-supplement"
+                            && p["valueUri"] == "urn:native:required|1"));
+                }
+            }
+            let (status, body) = member(&app, &definition, "2").await;
+            assert_eq!(status, if available { 200 } else { 422 }, "{body}");
+            if available {
+                assert_eq!(parameter(&body, "result")["valueBoolean"], true);
+            }
+        }
+    }
+    cleanup(admin, pool, schema).await;
+}

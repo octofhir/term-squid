@@ -62,4 +62,5 @@ pub fn operation_routes() -> Router<Arc<dyn TerminologyStore>> {
             "/ConceptMap/{id}/$translate",
             get(translate_instance_get).post(translate_instance_post),
         )
+        .route_layer(axum::middleware::from_fn(super::transient::scope))
 }

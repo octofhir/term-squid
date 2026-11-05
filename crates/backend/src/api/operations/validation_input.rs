@@ -24,8 +24,16 @@ pub(super) fn fields(params: &Parameters, vs: bool, instance: bool) -> Result<()
         ("abstract", Boolean, false),
         ("date", DateTime, false),
         ("displayLanguage", Text, false),
+        ("lenient-display-validation", Boolean, false),
         (if vs { "systemVersion" } else { "version" }, Text, false),
     ];
+    if vs {
+        fields.extend([
+            ("system-version", Text, true),
+            ("check-system-version", Text, true),
+            ("force-system-version", Text, true),
+        ]);
+    }
     if !instance {
         fields.extend([
             ("url", Text, false),
@@ -39,6 +47,7 @@ pub(super) fn fields(params: &Parameters, vs: bool, instance: bool) -> Result<()
     params.validate_fields(&fields)
 }
 struct Candidate {
+    origin: crate::store::ValidationInput,
     system: Option<String>,
     version: Option<String>,
     code: String,
@@ -101,10 +110,15 @@ fn candidates(
     };
     borrowed
         .into_iter()
-        .map(|mut input| {
+        .enumerate()
+        .map(|(index, mut input)| {
+            if params.get_parameter("codeableConcept").is_some() {
+                input.origin = crate::store::ValidationInput::CodeableConcept(index);
+            }
             input.system = input.system.or(default_system);
             let canonical = input.system.map(|_| input.canonical(None)).transpose()?;
             Ok(Candidate {
+                origin: input.origin,
                 system: canonical.as_ref().map(|c| c.url.clone()),
                 version: canonical
                     .and_then(|c| c.version)
@@ -126,6 +140,24 @@ pub(super) fn answer(answer: ValidationAnswer) -> FhirJson<Parameters> {
     if let Some(message) = answer.message {
         result.push(Parameter::string("message", message));
     }
+    if let Some(coding) = answer.coding {
+        result.push(Parameter::uri("system", coding.system));
+        result.push(Parameter::code("code", coding.code));
+        if let Some(normalized) = coding.normalized {
+            result.push(Parameter::code("normalized-code", normalized));
+        }
+        if !coding.issues.is_empty() {
+            result.push(Parameter {
+                name: "issues".into(),
+                value: None,
+                part: None,
+                other: Default::default(),
+                resource: Some(
+                    serde_json::json!({"resourceType":"OperationOutcome","issue":coding.issues}),
+                ),
+            });
+        }
+    }
     FhirJson(Parameters::with_parameters(result))
 }
 pub(super) async fn complex(
@@ -142,6 +174,27 @@ pub(super) async fn complex(
         date: params.get_date("date").map(str::to_owned),
         language: params.get_string("displayLanguage").map(str::to_owned),
         context: params.get_string("context").map(str::to_owned),
+        lenient_display: params
+            .get_boolean("lenient-display-validation")
+            .unwrap_or(false),
+        coding_diagnostics: (params.get_parameter("coding").is_some()
+            || params.get_parameter("codeableConcept").is_some()
+            || params.get_boolean("lenient-display-validation") == Some(true)),
+        system_version: params
+            .get_strings("system-version")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        check_system_version: params
+            .get_strings("check-system-version")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        force_system_version: params
+            .get_strings("force-system-version")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
     };
     let infer = vs
         && params.get_parameter("system").is_none()
@@ -158,6 +211,10 @@ pub(super) async fn complex(
         && options.date.is_none()
         && options.language.is_none()
         && options.context.is_none()
+        && options.system_version.is_empty()
+        && options.check_system_version.is_empty()
+        && options.force_system_version.is_empty()
+        && params.get_parameter("lenient-display-validation").is_none()
         && !infer
     {
         return Ok(None);
@@ -182,6 +239,7 @@ pub(super) async fn complex(
     let borrowed: Vec<_> = candidates
         .iter()
         .map(|c| ValidationCandidate {
+            origin: c.origin,
             system: c.system.as_deref(),
             version: c.version.as_deref(),
             code: &c.code,
@@ -260,6 +318,10 @@ pub(super) async fn get(
     if params.date.is_none()
         && params.language.is_none()
         && params.context.is_none()
+        && params.default_system_versions.is_empty()
+        && params.check_system_versions.is_empty()
+        && params.force_system_versions.is_empty()
+        && params.lenient_display.is_none()
         && !(vs && params.system.is_none())
     {
         return Ok(None);
@@ -281,6 +343,13 @@ pub(super) async fn get(
             fields.push(Parameter::string(name, value));
         }
     }
+    for (name, values) in [
+        ("system-version", &params.default_system_versions),
+        ("check-system-version", &params.check_system_versions),
+        ("force-system-version", &params.force_system_versions),
+    ] {
+        fields.extend(values.iter().map(|value| Parameter::string(name, value)));
+    }
     if let Some(date) = &params.date {
         let mut p = Parameter::string("date", date);
         p.value = Some(ParameterValue::ValueDateTime(date.clone()));
@@ -288,6 +357,9 @@ pub(super) async fn get(
     }
     if let Some(allow) = params.allow_abstract {
         fields.push(Parameter::boolean("abstract", allow));
+    }
+    if let Some(lenient) = params.lenient_display {
+        fields.push(Parameter::boolean("lenient-display-validation", lenient));
     }
     let parameters = Parameters::with_parameters(fields);
     self::fields(&parameters, vs, id.is_some())?;

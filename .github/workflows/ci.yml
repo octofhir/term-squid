@@ -95,6 +95,9 @@ jobs:
       - name: Test benchmark harness
         run: bun test benchmarks
 
+      - name: Test pinned ecosystem adapter
+        run: python3 -B -m unittest discover -s benchmarks/ecosystem -p 'test_*.py'
+
   frontend:
     name: Frontend Build
     runs-on: ubuntu-latest
@@ -177,6 +180,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Generate local fixtures
         run: bun benchmarks/bench.ts fixtures
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: '2.3.0'
       - name: Test production application and restart recovery
         run: python3 benchmarks/ui_admin_smoke.py --database-url postgres://postgres:postgres@127.0.0.1:5432/termsquid_ui_test
       - name: Preserve browser evidence
@@ -189,6 +195,65 @@ jobs:
             .benchmarks/ui-admin/browser-results
           retention-days: 7
 
+  ecosystem:
+    name: Original and preloaded R4 case suite with cache parity
+    needs: frontend
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: termsquid_ecosystem
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clear embedded build output
+        run: rm -rf crates/backend/static && mkdir -p crates/backend/static
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: crates/backend/static
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .benchmarks/ecosystem/*.jar
+            .benchmarks/ecosystem/*.tgz
+          key: ecosystem-artifacts-${{ hashFiles('benchmarks/ecosystem/lock.json') }}
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: '2.3.0'
+      - name: Build embedded release after frontend
+        run: cargo build --locked --release --bin backend --bin term-squid-cli
+      - name: Prove original empty-database setup, preloaded suite and unchanged local gates
+        run: python3 -B benchmarks/ecosystem_smoke.py --database-url postgres://postgres:postgres@127.0.0.1:5432/termsquid_ecosystem
+      - name: Preserve official expected and actual responses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecosystem-r4-evidence
+          path: .benchmarks/ecosystem-ci
+          retention-days: 7
+
   core-dependencies:
     name: Independent core without transports or SQL
     runs-on: ubuntu-latest
@@ -198,13 +263,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tests/core-consumer
-      - run: cargo run --manifest-path tests/core-consumer/Cargo.toml
+      - run: cargo run --locked --manifest-path tests/core-consumer/Cargo.toml
       - name: Guard library dependency boundary
         run: |
           python3 - <<'PY'
           import re, subprocess
           graph = subprocess.check_output([
-              "cargo", "tree", "--manifest-path", "tests/core-consumer/Cargo.toml",
+              "cargo", "tree", "--locked", "--manifest-path", "tests/core-consumer/Cargo.toml",
               "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
           ], text=True)
           forbidden = re.findall(r"^(?:tokio|reqwest|hyper|rustls|native-tls|openssl-sys|sqlx|sqlx-core|sqlx-postgres|regex|fuzzy-matcher) v.*", graph, re.M)

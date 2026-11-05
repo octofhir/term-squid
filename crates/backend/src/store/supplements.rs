@@ -2,8 +2,72 @@
 use crate::error::AppError;
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+/// Required overlays must actually participate in the selected source snapshot.
+#[derive(Default)]
+pub(super) struct Requirements(BTreeSet<term_squid_core::Canonical>);
+impl Requirements {
+    pub fn collect(&mut self, resource: &Value) -> Result<(), AppError> {
+        let Some(extensions) = resource.get("extension") else {
+            return Ok(());
+        };
+        let extensions = extensions
+            .as_array()
+            .ok_or_else(|| AppError::BadRequest("ValueSet.extension must be an array".into()))?;
+        for extension in extensions.iter().filter(|extension| {
+            extension["url"] == "http://hl7.org/fhir/StructureDefinition/valueset-supplement"
+        }) {
+            let reference = extension["valueCanonical"]
+                .as_str()
+                .filter(|value| !value.is_empty() && value.len() <= 4096)
+                .ok_or_else(|| {
+                    AppError::BadRequest(
+                        "Required ValueSet supplement needs a bounded valueCanonical".into(),
+                    )
+                })?;
+            if extension.as_object().is_none_or(|fields| {
+                fields.keys().any(|key| {
+                    key == "extension" || key.starts_with("value") && key != "valueCanonical"
+                })
+            }) {
+                return Err(AppError::BadRequest(
+                    "Required ValueSet supplement needs exactly one valueCanonical".into(),
+                ));
+            }
+            self.0
+                .insert(term_squid_core::Canonical::parse(reference, None)?);
+            if self.0.len() > 128 {
+                return Err(AppError::BadRequest(
+                    "Required supplement dependency limit exceeded".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn check(&self, sources: &crate::models::ExpansionSources) -> Result<(), AppError> {
+        for required in &self.0 {
+            if !sources.supplements.iter().any(|actual| {
+                actual.url == required.url
+                    && required
+                        .version
+                        .as_ref()
+                        .is_none_or(|version| actual.version.as_ref() == Some(version))
+            }) {
+                return Err(AppError::Terminology(term_squid_core::Error(format!(
+                    "Required supplement {}{} was not applied to the selected CodeSystem editions; install an applicable active supplement or select its supported edition",
+                    required.url,
+                    required.version.as_ref().map_or(String::new(), |version| format!("|{version}")),
+                ))));
+            }
+        }
+        Ok(())
+    }
+}
 
 pub(super) async fn ids(
     tx: &mut Transaction<'_, Postgres>,
@@ -58,18 +122,14 @@ pub(super) async fn designations(
     base: Uuid,
     code: &str,
     date: Option<&str>,
+    budget: &mut i64,
 ) -> Result<Vec<Value>, AppError> {
     let selected = ids(tx, &[base], date).await?;
     if selected.is_empty() {
         return Ok(Vec::new());
     }
-    let rows:Vec<sqlx::types::Json<Value>>=sqlx::query_scalar("SELECT d FROM code_systems b JOIN concepts c ON c.code_system_id=ANY($2::uuid[]) AND (c.code=$3 OR NOT b.case_sensitive AND lower(c.code)=lower($3)) CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.designations,'[]')) d WHERE b.id=$1 ORDER BY c.code_system_id LIMIT 257").bind(base).bind(selected).bind(code).fetch_all(&mut **tx).await?;
-    if rows.len() > 256 {
-        return Err(AppError::BadRequest(
-            "Supplement designations exceed 256 per concept".into(),
-        ));
-    }
-    Ok(rows.into_iter().map(|r| r.0).collect())
+    let rows: Vec<super::designations::LabelRow> = sqlx::query_as("WITH labels AS MATERIALIZED (SELECT c.code_system_id,d.ordinal,d.label FROM code_systems b JOIN concepts c ON c.code_system_id=ANY($2::uuid[]) AND (c.code=$3 OR NOT b.case_sensitive AND lower(c.code)=lower($3)) CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.designations,'[]')) WITH ORDINALITY d(label,ordinal) WHERE b.id=$1 ORDER BY c.code_system_id,d.ordinal LIMIT 257), sized AS (SELECT code_system_id,ordinal,label,octet_length(label::text)::bigint AS bytes FROM labels) SELECT CASE WHEN sum(bytes) OVER ()<=$4 THEN label END,bytes FROM sized ORDER BY code_system_id,ordinal").bind(base).bind(selected).bind(code).bind(*budget).fetch_all(&mut **tx).await?;
+    super::designations::decode(rows, budget)
 }
 pub(super) async fn load(
     tx: &mut Transaction<'_, Postgres>,
@@ -133,7 +193,32 @@ pub(super) fn for_code(
     code: &str,
     case_sensitive: bool,
 ) -> Result<Value, AppError> {
-    let mut result = resource.clone();
+    for_codes(resource, &BTreeSet::from([code.to_owned()]), case_sensitive)
+}
+pub(super) fn for_codes(
+    resource: &Value,
+    codes: &BTreeSet<String>,
+    case_sensitive: bool,
+) -> Result<Value, AppError> {
+    let codes: BTreeSet<_> = codes
+        .iter()
+        .map(|code| {
+            if case_sensitive {
+                code.clone()
+            } else {
+                code.to_lowercase()
+            }
+        })
+        .collect();
+    let mut result = Value::Object(
+        resource
+            .as_object()
+            .ok_or_else(|| AppError::BadRequest("Supplement must be an object".into()))?
+            .iter()
+            .filter(|(name, _)| name.as_str() != "concept")
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect(),
+    );
     let mut pending: Vec<_> = resource["concept"]
         .as_array()
         .into_iter()
@@ -149,7 +234,11 @@ pub(super) fn for_code(
             ));
         }
         if concept["code"].as_str().is_some_and(|c| {
-            c == code || !case_sensitive && c.to_lowercase() == code.to_lowercase()
+            if case_sensitive {
+                codes.contains(c)
+            } else {
+                codes.contains(&c.to_lowercase())
+            }
         }) {
             let mut concept = concept.clone();
             concept
@@ -183,4 +272,35 @@ pub(super) fn enrich(
         .cloned()
         .collect();
     Ok((designations, properties))
+}
+
+#[cfg(test)]
+mod requirement_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn malformed_or_excessive_required_supplements_are_not_ignored() {
+        let url = "http://hl7.org/fhir/StructureDefinition/valueset-supplement";
+        for extension in [
+            json!({"url":url}),
+            json!({"url":url,"valueUri":"urn:supplement"}),
+            json!({"url":url,"valueCanonical":"urn:supplement","valueString":"ambiguous"}),
+            json!({"url":url,"valueCanonical":"urn:supplement","extension":[]}),
+            json!({"url":url,"valueCanonical":""}),
+            json!({"url":url,"valueCanonical":"x".repeat(4097)}),
+        ] {
+            assert!(Requirements::default()
+                .collect(&json!({"extension":[extension]}))
+                .is_err());
+        }
+        assert!(Requirements::default()
+            .collect(&json!({"extension":{}}))
+            .is_err());
+        let extensions: Vec<_> = (0..129)
+            .map(|i| json!({"url":url,"valueCanonical":format!("urn:required:{i}")}))
+            .collect();
+        assert!(Requirements::default()
+            .collect(&json!({"extension":extensions}))
+            .is_err());
+    }
 }

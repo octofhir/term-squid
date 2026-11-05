@@ -8,9 +8,18 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+#[cfg(test)]
+pub(crate) type ProbeGate = (
+    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
+
 /// PostgreSQL implementation of TerminologyStore
 pub struct PostgresStore {
     pool: PgPool,
+    #[cfg(test)]
+    probe_gate: tokio::sync::Mutex<Option<ProbeGate>>,
+    cache_enabled: bool,
     native_reads: std::sync::Arc<tokio::sync::Semaphore>,
     value_set_requests: tokio::sync::Semaphore,
     hierarchies: super::hierarchy::HierarchyPlans,
@@ -20,6 +29,15 @@ pub struct PostgresStore {
     preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
     maps: tokio::sync::Mutex<MapCache>,
     map_preparation: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+enum PreparationPermit {
+    Shared {
+        _guard: tokio::sync::OwnedMutexGuard<()>,
+    },
+    Temporary {
+        _permit: tokio::sync::OwnedSemaphorePermit,
+    },
 }
 
 // Cache locking never spans SQL or preparation. Generations only advance: an older
@@ -88,6 +106,9 @@ impl PostgresStore {
         Self {
             generations: super::generation::GenerationReads::new(pool.clone()),
             pool,
+            #[cfg(test)]
+            probe_gate: Default::default(),
+            cache_enabled: true,
             native_reads: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
             value_set_requests: tokio::sync::Semaphore::new(64),
             hierarchies: super::hierarchy::HierarchyPlans::default(),
@@ -97,6 +118,44 @@ impl PostgresStore {
             maps: tokio::sync::Mutex::new(MapCache::default()),
             map_preparation: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+    /// Disable retained plans for independent correctness checks; snapshot/freshness rules remain.
+    pub fn without_prepared_cache(pool: PgPool) -> Self {
+        let mut store = Self::new(pool);
+        store.cache_enabled = false;
+        store
+    }
+    #[cfg(test)]
+    pub(crate) async fn gate_next_probe(&self) -> ProbeGate {
+        let gate = (
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        *self.probe_gate.lock().await = Some(gate.clone());
+        gate
+    }
+    #[cfg(test)]
+    async fn finish_probe(&self) {
+        let gate = self.probe_gate.lock().await.take();
+        if let Some((reached, resume)) = gate {
+            reached.notify_one();
+            resume.notified().await;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) async fn reusable_cache_usage(&self) -> [(usize, usize); 4] {
+        let concepts = self.concepts.usage().await;
+        let hierarchies = self.hierarchies.usage().await;
+        let sets = self.prepared.lock().await;
+        let set_usage = (sets.entries.len(), sets.bytes);
+        drop(sets);
+        let maps = self.maps.lock().await;
+        [
+            concepts,
+            hierarchies,
+            set_usage,
+            (maps.entries.len(), maps.bytes),
+        ]
     }
     #[cfg(test)]
     pub(crate) fn native_available_permits(&self) -> usize {
@@ -143,11 +202,23 @@ impl PostgresStore {
         id: Option<Uuid>,
         code: &str,
     ) -> Result<Option<ResolvedConcept>, AppError> {
-        let result = match self
-            .concepts
-            .resolve(&self.pool, &self.generations, &root, id, code)
-            .await?
-        {
+        if let Some(entry) = super::transient::select(
+            super::transient::Kind::System,
+            &root.url,
+            root.version.as_deref(),
+            id,
+            None,
+        )? {
+            return entry.concept(code).map(Some);
+        }
+        let read = if self.cache_enabled && !super::transient::active() {
+            self.concepts
+                .resolve(&self.pool, &self.generations, &root, id, code)
+                .await?
+        } else {
+            super::concepts::Read::Sql
+        };
+        let result = match read {
             super::concepts::Read::Missing => Ok(None),
             super::concepts::Read::Resolved(row) => Ok(Some(row)),
             super::concepts::Read::Sql => {
@@ -163,6 +234,8 @@ impl PostgresStore {
                 term_squid_core::loinc::require_primary_code(code)?;
             }
         }
+        #[cfg(test)]
+        self.finish_probe().await;
         Ok(result)
     }
     async fn prepared_subsumption(
@@ -172,6 +245,20 @@ impl PostgresStore {
         a: &str,
         b: &str,
     ) -> Result<Option<ResolvedSubsumption>, AppError> {
+        if let Some(entry) = super::transient::select(
+            super::transient::Kind::System,
+            &root.url,
+            root.version.as_deref(),
+            id,
+            None,
+        )? {
+            return entry.subsumption(a, b).map(Some);
+        }
+        if !self.cache_enabled || super::transient::active() {
+            return self
+                .subsumption_row(&root.url, root.version.as_deref(), a, b, id)
+                .await;
+        }
         match self
             .hierarchies
             .resolve(&self.pool, &self.generations, &root, id, a, b)
@@ -186,6 +273,9 @@ impl PostgresStore {
         }
     }
     async fn cached_plan(&self, generation: i64, key: &PlanKey) -> Option<ExpandedValueSet> {
+        if !self.cache_enabled || super::transient::active() {
+            return None;
+        }
         let mut cache = self.prepared.lock().await;
         cache.advance(generation);
         (cache.generation == generation)
@@ -197,6 +287,9 @@ impl PostgresStore {
         generation: i64,
         key: &MapKey,
     ) -> Option<std::sync::Arc<term_squid_core::PreparedConceptMap>> {
+        if !self.cache_enabled || super::transient::active() {
+            return None;
+        }
         let mut cache = self.maps.lock().await;
         cache.advance(generation);
         if cache.generation == generation {
@@ -205,31 +298,69 @@ impl PostgresStore {
             None
         }
     }
+    async fn preparation_permit(&self, map: bool) -> Result<PreparationPermit, AppError> {
+        if super::transient::active() {
+            // Request-local plans never enter the retained-plan single-flight mutex.
+            Ok(PreparationPermit::Temporary {
+                _permit: self
+                    .native_reads
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| AppError::Overloaded)?,
+            })
+        } else {
+            let lock = if map {
+                &self.map_preparation
+            } else {
+                &self.preparation
+            };
+            Ok(PreparationPermit::Shared {
+                _guard: lock.clone().lock_owned().await,
+            })
+        }
+    }
     async fn map_snapshot(
         &self,
         url: &str,
         version: Option<&str>,
         id: Option<Uuid>,
     ) -> Result<std::sync::Arc<term_squid_core::PreparedConceptMap>, AppError> {
+        if let Some(entry) =
+            super::transient::select(super::transient::Kind::Map, url, version, id, None)?
+        {
+            return entry
+                .map
+                .clone()
+                .ok_or_else(|| AppError::BadRequest("Invalid temporary ConceptMap".into()));
+        }
         let root = term_squid_core::Canonical::parse(url, version)?;
         let key = (root.clone(), id);
-        let observed = self
-            .generations
-            .current(super::generation::Family::Map)
-            .await?;
+        let temporary = super::transient::active();
+        let observed = if temporary {
+            0
+        } else {
+            self.generations
+                .current(super::generation::Family::Map)
+                .await?
+        };
         if let Some(plan) = self.cached_map(observed, &key).await {
             return Ok(plan);
         }
-        let admission = self.map_preparation.clone().lock_owned().await;
+        let admission = self.preparation_permit(true).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
-        let generation: i64 = sqlx::query_scalar(
-            "SELECT generation FROM terminology_generation WHERE singleton AND maps_tracked",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let generation: i64 = if temporary {
+            0
+        } else {
+            sqlx::query_scalar(
+                "SELECT generation FROM terminology_generation WHERE singleton AND maps_tracked",
+            )
+            .fetch_one(&mut *tx)
+            .await?
+        };
         if let Some(plan) = self.cached_map(generation, &key).await {
             tx.commit().await?;
             return Ok(plan);
@@ -258,6 +389,9 @@ impl PostgresStore {
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))??;
+        if !self.cache_enabled || super::transient::active() {
+            return Ok(plan);
+        }
         let charge = plan.memory_charge()
             + 4096
             + (root.url.len() + root.version.as_ref().map_or(0, String::len)) * 8;
@@ -326,23 +460,33 @@ impl PostgresStore {
         );
         // A fresh autocommit statement is the warm operation's snapshot boundary.
         // No time-based generation cache: a request starting after a CLI commit sees it.
-        let observed = self
-            .generations
-            .current(super::generation::Family::ValueSet)
-            .await?;
+        let temporary = super::transient::active();
+        let observed = if temporary {
+            0
+        } else {
+            self.generations
+                .current(super::generation::Family::ValueSet)
+                .await?
+        };
         if let Some(result) = self.cached_plan(observed, &cache_key).await {
             return Ok(result);
         }
         // Only cold work is serialized. Recheck in a new snapshot after waiting for admission.
-        let preparation = self.preparation.clone().lock_owned().await;
+        let preparation = self.preparation_permit(false).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
-        let generation: i64 =
+        let generation: i64 = if temporary {
+            sqlx::query("SET LOCAL statement_timeout='10s'")
+                .execute(&mut *tx)
+                .await?;
+            0
+        } else {
             sqlx::query_scalar("SELECT generation FROM terminology_generation WHERE singleton")
                 .fetch_one(&mut *tx)
-                .await?;
+                .await?
+        };
         if let Some(result) = self.cached_plan(generation, &cache_key).await {
             tx.commit().await?;
             return Ok(result);
@@ -364,11 +508,20 @@ impl PostgresStore {
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))??;
+        if !self.cache_enabled || super::transient::active() {
+            return Ok(result);
+        }
         let key_bytes = cache_key.0.url.len()
             + cache_key.0.version.as_ref().map_or(0, String::len)
             + cache_key.2.as_ref().map_or(0, |(s, v)| s.len() + v.len());
         let charge = key_bytes * 8
             + result.members.memory_charge()
+            + result.sources.memory_charge()
+            + result
+                .knowledge
+                .values()
+                .map(term_squid_core::CodeSystemIndex::memory_charge)
+                .sum::<usize>()
             + serde_json::to_vec(result.resource.as_ref())
                 .map_err(|e| AppError::Internal(e.into()))?
                 .len()
@@ -525,7 +678,13 @@ impl TerminologyStore for PostgresStore {
         if !implicit {
             match super::value_set::finite(self, request, operation).await {
                 Err(AppError::NativeValueSet) => {}
-                result => return result,
+                result => {
+                    #[cfg(test)]
+                    if result.is_ok() {
+                        self.finish_probe().await;
+                    }
+                    return result;
+                }
             }
         }
         // Cancellation releases admission and work permits without detached preparation.
@@ -1218,6 +1377,8 @@ mod cache_tests {
         );
         let plan = ExpandedValueSet {
             resource: std::sync::Arc::new(serde_json::json!({"generation":2})),
+            sources: std::sync::Arc::default(),
+            knowledge: std::sync::Arc::default(),
             members: std::sync::Arc::new(PreparedValueSet::prepare(&snapshot, &root).unwrap()),
         };
         let pool = sqlx::postgres::PgPoolOptions::new()

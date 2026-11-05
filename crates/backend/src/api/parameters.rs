@@ -42,6 +42,19 @@ pub enum ParameterValue {
     ValueCodeableConcept(CodeableConcept),
 }
 
+impl ParameterValue {
+    fn text(&self) -> Option<&str> {
+        match self {
+            Self::ValueString(value)
+            | Self::ValueCode(value)
+            | Self::ValueUri(value)
+            | Self::ValueUrl(value)
+            | Self::ValueCanonical(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 /// FHIR Coding datatype
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,14 +175,15 @@ impl Parameters {
     }
 
     pub fn get_string(&self, name: &str) -> Option<&str> {
-        match self.get_parameter(name)?.value.as_ref()? {
-            ParameterValue::ValueString(s)
-            | ParameterValue::ValueUri(s)
-            | ParameterValue::ValueUrl(s)
-            | ParameterValue::ValueCanonical(s)
-            | ParameterValue::ValueCode(s) => Some(s),
-            _ => None,
-        }
+        self.get_parameter(name)?.value.as_ref()?.text()
+    }
+    pub fn get_strings(&self, name: &str) -> Vec<&str> {
+        self.parameter
+            .iter()
+            .flatten()
+            .filter(|parameter| parameter.name == name)
+            .filter_map(|parameter| parameter.value.as_ref().and_then(ParameterValue::text))
+            .collect()
     }
 
     pub fn get_date(&self, name: &str) -> Option<&str> {

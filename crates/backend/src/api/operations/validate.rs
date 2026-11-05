@@ -24,6 +24,8 @@ pub struct ValidateCodeParams {
     pub date: Option<String>,
     #[serde(rename = "displayLanguage")]
     pub language: Option<String>,
+    #[serde(rename = "lenient-display-validation")]
+    pub lenient_display: Option<bool>,
     pub context: Option<String>,
     pub code: Option<String>,
     pub version: Option<String>,
@@ -34,6 +36,12 @@ pub struct ValidateCodeParams {
     pub value_set_version: Option<String>,
     #[serde(rename = "systemVersion")]
     pub system_version: Option<String>,
+    #[serde(rename = "system-version", default)]
+    pub default_system_versions: Vec<String>,
+    #[serde(rename = "check-system-version", default)]
+    pub check_system_versions: Vec<String>,
+    #[serde(rename = "force-system-version", default)]
+    pub force_system_versions: Vec<String>,
 }
 
 impl ValidateCodeParams {
@@ -45,6 +53,15 @@ impl ValidateCodeParams {
         validate_json_format(self.format.as_deref())?;
         CodedInput::validate_text("url", self.url.as_deref())?;
         CodedInput::validate_text("valueSetVersion", self.value_set_version.as_deref())?;
+        if !value_set
+            && (!self.default_system_versions.is_empty()
+                || !self.check_system_versions.is_empty()
+                || !self.force_system_versions.is_empty())
+        {
+            return Err(AppError::BadRequest(
+                "System version directives apply to ValueSet validation".into(),
+            ));
+        }
         if value_set && self.version.is_some()
             || !value_set && (self.system_version.is_some() || self.value_set_version.is_some())
         {
@@ -102,6 +119,7 @@ pub async fn validate_code_cs_get(
         input.code,
         selected.version.as_deref(),
         input.display,
+        input.origin,
     )
     .await
 }
@@ -144,6 +162,7 @@ pub async fn validate_code_cs_post(
         input.code,
         selected.version.as_deref(),
         input.display,
+        input.origin,
     )
     .await
 }
@@ -198,7 +217,31 @@ async fn validate_code_instance(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("CodeSystem {id} not found")))?;
     input.check_instance(&resolved)?;
-    validate_result(resolved, input.code, input.display)
+    if needs_label_validation(&resolved, input.display) {
+        let canonical = input.system.map(|_| input.canonical(None)).transpose()?;
+        return validate_labels(
+            store,
+            crate::store::ValidationTarget::CodeSystem {
+                url: "urn:term-squid:instance",
+                version: None,
+                id: Some(id),
+                inline: None,
+                alternatives: false,
+            },
+            crate::store::ValidationCandidate {
+                origin: input.origin,
+                system: canonical.as_ref().map(|key| key.url.as_str()),
+                version: canonical
+                    .as_ref()
+                    .and_then(|key| key.version.as_deref())
+                    .or(input.version),
+                code: input.code,
+                display: input.display,
+            },
+        )
+        .await;
+    }
+    validate_result(resolved, input.code, input.display, input.origin)
 }
 
 /// GET /ValueSet/$validate-code?url=...&code=...&system=...
@@ -273,6 +316,7 @@ pub async fn validate_code_vs_post(
         &system.url,
         input.code,
         input.display,
+        input.origin,
     )
     .await
 }
@@ -335,6 +379,7 @@ async fn validate_value_set_instance(
         &system.url,
         input.code,
         input.display,
+        input.origin,
     )
     .await
 }
@@ -347,6 +392,7 @@ async fn validate_options(
 ) -> Result<Json<Parameters>, AppError> {
     let canonical = input.system.map(|_| input.canonical(None)).transpose()?;
     let candidates = [crate::store::ValidationCandidate {
+        origin: input.origin,
         system: canonical.as_ref().map(|c| c.url.as_str()),
         version: canonical
             .as_ref()
@@ -356,7 +402,16 @@ async fn validate_options(
         display: input.display,
     }];
     store
-        .validate_candidates(target, &candidates, allow)
+        .validate_context(
+            target,
+            &candidates,
+            allow,
+            &crate::store::ValidationOptions {
+                coding_diagnostics: matches!(target, crate::store::ValidationTarget::ValueSet(_))
+                    && !matches!(input.origin, crate::store::ValidationInput::Primitive),
+                ..Default::default()
+            },
+        )
         .await
         .map(super::validation_input::answer)
 }
@@ -367,6 +422,7 @@ async fn perform_validate_code(
     code: &str,
     version: Option<&str>,
     display: Option<&str>,
+    origin: crate::store::ValidationInput,
 ) -> Result<Json<Parameters>, AppError> {
     let resolved = store
         .resolve_concept(system, version, code)
@@ -376,13 +432,68 @@ async fn perform_validate_code(
                 "CodeSystem '{system}' version {version:?} not found"
             ))
         })?;
-    validate_result(resolved, code, display)
+    if needs_label_validation(&resolved, display) {
+        return validate_labels(
+            &*store,
+            crate::store::ValidationTarget::CodeSystem {
+                url: system,
+                version,
+                id: None,
+                inline: None,
+                alternatives: false,
+            },
+            crate::store::ValidationCandidate {
+                origin,
+                system: Some(system),
+                version,
+                code,
+                display,
+            },
+        )
+        .await;
+    }
+    validate_result(resolved, code, display, origin)
+}
+
+fn needs_label_validation(
+    resolved: &crate::models::ResolvedConcept,
+    display: Option<&str>,
+) -> bool {
+    resolved.code.is_some()
+        && display.is_some_and(|expected| resolved.display.as_deref() != Some(expected))
+        && !(resolved.url == term_squid_core::ucum::SYSTEM
+            && resolved.version.as_deref() == Some(term_squid_core::ucum::VERSION))
+}
+
+/// The common matching-display path needs no metadata read. On a mismatch, use a new
+/// complete validation snapshot and accept only a label that actually belongs to its source.
+async fn validate_labels(
+    store: &dyn TerminologyStore,
+    target: crate::store::ValidationTarget<'_>,
+    candidate: crate::store::ValidationCandidate<'_>,
+) -> Result<Json<Parameters>, AppError> {
+    let diagnostics = !matches!(candidate.origin, crate::store::ValidationInput::Primitive);
+    // Discard the probe decision. Resolve the original selectors and all label metadata
+    // on this complete snapshot, including negative answers after concurrent activation.
+    store
+        .validate_context(
+            target,
+            &[candidate],
+            true,
+            &crate::store::ValidationOptions {
+                coding_diagnostics: diagnostics,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(super::validation_input::answer)
 }
 
 fn validate_result(
     resolved: crate::models::ResolvedConcept,
     code: &str,
     display: Option<&str>,
+    origin: crate::store::ValidationInput,
 ) -> Result<Json<Parameters>, AppError> {
     if resolved.content_mode.as_deref() == Some("supplement") {
         return Err(AppError::BadRequest(
@@ -392,6 +503,42 @@ fn validate_result(
     if resolved.code.is_none() && resolved.content_mode.as_deref() != Some("complete") {
         return Err(AppError::BadRequest(
             "CodeSystem content is incomplete; membership is unknown".into(),
+        ));
+    }
+    if !matches!(origin, crate::store::ValidationInput::Primitive) {
+        let candidate = crate::store::ValidationCandidate {
+            origin,
+            system: Some(&resolved.url),
+            version: resolved.version.as_deref(),
+            code,
+            display,
+        };
+        if let Some(actual) = &resolved.code {
+            let valid =
+                display.is_none_or(|expected| resolved.display.as_deref() == Some(expected));
+            let answer = crate::store::ValidationAnswer {
+                valid,
+                display: resolved.display.clone(),
+                version: resolved.version.clone(),
+                message: None,
+                coding: None,
+                failure: (!valid).then_some(crate::store::ValidationFailure::Display),
+            }
+            .with_code(
+                &resolved.url,
+                resolved.version.as_deref(),
+                actual,
+                false,
+                &candidate,
+            );
+            return Ok(super::validation_input::answer(answer));
+        }
+        return Ok(super::validation_input::answer(
+            crate::store::ValidationAnswer::unknown_code(
+                &resolved.url,
+                resolved.version.as_deref(),
+                &candidate,
+            ),
         ));
     }
     let mut valid = resolved.code.is_some();
@@ -444,6 +591,7 @@ async fn perform_validate_code_valueset(
         system,
         code,
         display,
+        crate::store::ValidationInput::Primitive,
     )
     .await
 }
@@ -455,6 +603,7 @@ async fn validate_value_set(
     system: &str,
     code: &str,
     display: Option<&str>,
+    origin: crate::store::ValidationInput,
 ) -> Result<Json<Parameters>, AppError> {
     let result = store
         .query_value_set(
@@ -470,21 +619,65 @@ async fn validate_value_set(
         ValueSetResult::Native(page) => page.members.first(),
         ValueSetResult::Finite(plan) => plan.members.find(system, system_version, code),
     };
-    let valid = member.is_some_and(|m| display.is_none_or(|d| m.display.as_deref() == Some(d)));
-    let mut result = vec![Parameter::boolean("result", valid)];
-    if let Some(m) = member {
-        if let Some(display) = &m.display {
-            result.push(Parameter::string("display", display));
-        }
-        if let Some(version) = &m.version {
-            result.push(Parameter::string("version", version));
-        }
+    if member.is_some_and(|member| {
+        display.is_some_and(|expected| member.display.as_deref() != Some(expected))
+    }) {
+        return validate_labels(
+            store,
+            crate::store::ValidationTarget::ValueSet(request),
+            crate::store::ValidationCandidate {
+                origin,
+                system: Some(system),
+                version: system_version,
+                code,
+                display,
+            },
+        )
+        .await;
     }
-    if !valid {
-        result.push(Parameter::string(
-            "message",
-            "Code, version or display is not in the ValueSet",
-        ));
+    if matches!(origin, crate::store::ValidationInput::Primitive) {
+        // Preserve the existing primitive wire contract for equivalent stored/inline/implicit sets.
+        let valid = member.is_some_and(|member| {
+            display.is_none_or(|expected| member.display.as_deref() == Some(expected))
+        });
+        let mut parameters = vec![Parameter::boolean("result", valid)];
+        if let Some(member) = member {
+            if let Some(display) = &member.display {
+                parameters.push(Parameter::string("display", display));
+            }
+            if let Some(version) = &member.version {
+                parameters.push(Parameter::string("version", version));
+            }
+        }
+        if !valid {
+            parameters.push(Parameter::string(
+                "message",
+                "Code, version or display is not in the ValueSet",
+            ));
+        }
+        return Ok(Json(Parameters::with_parameters(parameters)));
     }
-    Ok(Json(Parameters::with_parameters(result)))
+    let candidate = crate::store::ValidationCandidate {
+        origin,
+        system: Some(system),
+        version: system_version,
+        code,
+        display,
+    };
+    if let Some(member) = member {
+        let valid = display.is_none_or(|d| member.display.as_deref() == Some(d));
+        let answer = crate::store::ValidationAnswer {
+            valid,
+            display: member.display.clone(),
+            version: member.version.clone(),
+            message: (!valid).then(|| "Display does not match the registered concept".into()),
+            coding: None,
+            failure: (!valid).then_some(crate::store::ValidationFailure::Display),
+        }
+        .with_coding(member, &candidate);
+        return Ok(super::validation_input::answer(answer));
+    }
+    Ok(super::validation_input::answer(
+        crate::store::ValidationAnswer::missing_member(&result, system, &candidate),
+    ))
 }

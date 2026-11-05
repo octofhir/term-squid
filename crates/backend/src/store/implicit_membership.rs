@@ -91,6 +91,7 @@ pub(super) async fn find(
         abstract_code: false,
     });
     Ok(ValueSetResult::Native(ValueSetPage {
+        sources: Default::default(),
         resource: definition.resource(root),
         total: i64::from(member.is_some()),
         members: member.into_iter().collect(),

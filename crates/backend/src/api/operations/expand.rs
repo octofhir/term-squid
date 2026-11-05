@@ -259,11 +259,12 @@ async fn perform_expand(
     } else {
         None
     };
-    let (mut result, total, contains) = if let Some(page) = rich {
+    let (mut result, total, contains, sources) = if let Some(page) = rich {
         (
             page.resource,
             page.total,
             Ok(serde_json::Value::Array(page.contains)),
+            page.sources,
         )
     } else {
         let expanded = store
@@ -283,11 +284,12 @@ async fn perform_expand(
             )
             .await?;
 
-        let (result, total, contains) = match expanded {
+        let (result, total, contains, sources) = match expanded {
             ValueSetResult::Native(page) => (
                 page.resource,
                 page.total,
                 serde_json::to_value(page.members),
+                Arc::new(page.sources),
             ),
             ValueSetResult::Finite(expanded) => {
                 let filter = params.filter.as_ref().map(|s| s.to_lowercase());
@@ -311,10 +313,11 @@ async fn perform_expand(
                     expanded.resource.as_ref().clone(),
                     total,
                     serde_json::to_value(entries),
+                    expanded.sources.clone(),
                 )
             }
         };
-        (result, total, contains)
+        (result, total, contains, sources)
     };
     if id.is_some() {
         if let Some(url) = &params.url {
@@ -341,11 +344,16 @@ async fn perform_expand(
         }
     }
     let contains = contains.map_err(|e| AppError::Internal(e.into()))?;
+    let mut applied = expansion_parameters(&params, offset, count, total);
+    applied.extend(sources.parameters());
     let mut expansion = json!({
         "identifier": format!("urn:uuid:{}", Uuid::new_v4()),
         "timestamp": chrono::Utc::now().to_rfc3339(),
-        "total":total,"offset":offset,"parameter":expansion_parameters(&params,offset,count)
+        "total":total,"parameter":applied
     });
+    if params.offset.is_some() || offset > 0 {
+        expansion["offset"] = offset.into();
+    }
     expansion["contains"] = contains;
     if options.include_definition == Some(false) {
         if let Some(object) = result.as_object_mut() {
@@ -359,11 +367,19 @@ async fn perform_expand(
     Ok(Json(result))
 }
 
-fn expansion_parameters(params: &ExpandParams, offset: i64, count: i64) -> Vec<serde_json::Value> {
-    let mut result = vec![
-        json!({"name":"offset","valueInteger":offset}),
-        json!({"name":"count","valueInteger":count}),
-    ];
+fn expansion_parameters(
+    params: &ExpandParams,
+    offset: i64,
+    count: i64,
+    total: i64,
+) -> Vec<serde_json::Value> {
+    let mut result = Vec::new();
+    if params.offset.is_some() || offset > 0 {
+        result.push(json!({"name":"offset","valueInteger":offset}));
+    }
+    if params.count.is_some() || total > count {
+        result.push(json!({"name":"count","valueInteger":count}));
+    }
     if let Some(filter) = &params.filter {
         result.push(json!({"name":"filter","valueString":filter}));
     }

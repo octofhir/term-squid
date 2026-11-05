@@ -29,6 +29,7 @@ pub(super) fn unsupported(message: impl Into<String>) -> AppError {
 }
 #[derive(Clone)]
 struct SelectionPlan {
+    selected: Option<Canonical>,
     system: Option<Uuid>,
     system_url: Option<String>,
     versioned: bool,
@@ -403,6 +404,9 @@ pub(super) async fn query_options(
     let mut remaining = INPUT_BYTES;
     let mut pending = vec![root.clone()];
     let mut nodes = BTreeMap::new();
+    let mut sources = crate::models::ExpansionSources::default();
+    let mut requirements = super::supplements::Requirements::default();
+    let mut contained = super::contained::ContainedSets::default();
     let mut resource = Value::Null;
     let mut terms = 0;
     let mut selection_count = 0;
@@ -416,7 +420,14 @@ pub(super) async fn query_options(
         }
         let implicit = snomed::implicit(&key)?.or(loinc::implicit(&key)?);
         let implicit_root = implicit.is_some();
-        let mut definition = if let Some(i) = inline.as_ref().filter(|_| key == root) {
+        let local = contained.is_local(&key);
+        let mut definition = if let Some(definition) = contained.take(&key) {
+            super::options::check_resource_date(
+                &definition,
+                options.and_then(|o| o.date.as_deref()),
+            )?;
+            definition
+        } else if let Some(i) = inline.as_ref().filter(|_| key == root) {
             super::options::check_resource_date(
                 &i.resource,
                 options.and_then(|o| o.date.as_deref()),
@@ -425,6 +436,15 @@ pub(super) async fn query_options(
             i.resource.clone()
         } else if let Some(implicit) = implicit {
             implicit
+        } else if let Some(entry) = super::transient::select(
+            super::transient::Kind::Set,
+            &key.url,
+            key.version.as_deref(),
+            if key == root { request.id } else { None },
+            options.and_then(|o| o.date.as_deref()),
+        )? {
+            remaining -= entry.bytes as i64;
+            (*entry.resource).clone()
         } else if let Some(options) = options.filter(|o| o.date.is_some()) {
             super::selection::set(
                 tx,
@@ -450,8 +470,17 @@ pub(super) async fn query_options(
         if key == root {
             resource = definition.clone();
         }
+        requirements.collect(&definition)?;
+        if !local {
+            contained.register(&key, &mut definition)?;
+        }
         if let Some(options) = options {
             options.compose(tx, &mut definition).await?;
+        }
+        if key != root && !local {
+            sources
+                .value_sets
+                .insert(Canonical::parse(&key.url, definition["version"].as_str())?);
         }
         let compose: Compose = serde_json::from_value(
             definition
@@ -489,6 +518,9 @@ pub(super) async fn query_options(
                     },
                 )
                 .await?;
+                if let Some(selected) = &plan.selected {
+                    sources.systems.insert(selected.clone());
+                }
                 hierarchy_filters += plan
                     .filters
                     .iter()
@@ -511,18 +543,32 @@ pub(super) async fn query_options(
             },
         );
     }
-    let supplement_ids = if let Some(options) = options.filter(|o| o.display_language.is_some()) {
-        let bases: Vec<_> = nodes
-            .values()
-            .flat_map(|n| n.include.iter().chain(&n.exclude))
-            .filter_map(|p| p.system)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        super::supplements::ids(tx, &bases, options.date.as_deref()).await?
-    } else {
-        Vec::new()
-    };
+    let supplement_ids =
+        if !requirements.is_empty() || options.is_some_and(|o| o.display_language.is_some()) {
+            let bases: Vec<_> = nodes
+                .values()
+                .flat_map(|n| n.include.iter().chain(&n.exclude))
+                .filter_map(|p| p.system)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            super::supplements::ids(tx, &bases, options.and_then(|o| o.date.as_deref())).await?
+        } else {
+            Vec::new()
+        };
+    if !supplement_ids.is_empty() {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT url,version FROM code_systems WHERE id=ANY($1::uuid[]) ORDER BY url,version",
+        )
+        .bind(&supplement_ids)
+        .fetch_all(&mut **tx)
+        .await?;
+        sources.supplements.extend(
+            rows.into_iter()
+                .map(|(url, version)| Canonical { url, version }),
+        );
+    }
+    requirements.check(&sources)?;
     let mut order = Vec::new();
     topological(
         &root,
@@ -677,6 +723,7 @@ pub(super) async fn query_options(
         })
         .collect();
     Ok(ValueSetResult::Native(ValueSetPage {
+        sources,
         resource,
         total,
         members,
@@ -742,6 +789,7 @@ async fn resolve_selection(
         .map(|s| Canonical::parse(s, None))
         .collect::<Result<Vec<_>, _>>()?;
     let mut plan = SelectionPlan {
+        selected: None,
         system: None,
         system_url: None,
         versioned: false,
@@ -785,13 +833,17 @@ async fn resolve_selection(
     }
     let row: Option<(Uuid, Option<String>, Option<String>)> =
         query.build_query_as().fetch_optional(&mut **tx).await?;
-    let (id, _, provider) = row.ok_or_else(|| {
+    let (id, selected_version, provider) = row.ok_or_else(|| {
         AppError::NotFound(if system.url == snomed::SYSTEM {
             format!("SNOMED release {version:?} not found (implicit default: International)")
         } else {
             format!("CodeSystem {} release {version:?} not found", system.url)
         })
     })?;
+    plan.selected = Some(Canonical {
+        url: system.url.clone(),
+        version: selected_version,
+    });
     if system.url == snomed::SYSTEM {
         if provider.as_deref() != Some("snomed-rf2") {
             return Err(unsupported("Native composition requires an RF2 projection"));

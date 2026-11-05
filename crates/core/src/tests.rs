@@ -306,3 +306,396 @@ fn prepared_index_preserves_case_policy() {
     assert_eq!(plan.find("urn:codes", Some("1"), "A").unwrap().code, "a");
     assert!(plan.find("URN:CODES", None, "a").is_none());
 }
+
+#[test]
+fn declared_r4_status_policy_filters_retired_without_guessing_custom_lifecycles() {
+    let source = json!({"url":"urn:status","content":"complete","property":[{"code":"status","uri":"http://hl7.org/fhir/concept-properties#status"}],"concept":[
+        {"code":"active","property":[{"code":"status","valueCode":"active"}]},
+        {"code":"experimental","property":[{"code":"status","valueCode":"experimental"}]},
+        {"code":"deprecated","property":[{"code":"status","valueCode":"deprecated"}]},
+        {"code":"retired","property":[{"code":"status","valueCode":"retired"}]}
+    ]});
+    let prepared =
+        PreparedSystem::prepare_for_r4(serde_json::from_value(source.clone()).unwrap()).unwrap();
+    let mut snapshot = Snapshot::default();
+    snapshot.systems.insert(canonical("urn:status"), prepared);
+    snapshot.value_sets.insert(
+        canonical("urn:set"),
+        serde_json::from_value(json!({"inactive":false,"include":[{"system":"urn:status"}]}))
+            .unwrap(),
+    );
+    let members = snapshot.expand(&canonical("urn:set")).unwrap();
+    assert_eq!(members.len(), 3);
+    assert!(members.values().any(|member| member.code == "deprecated"));
+    assert!(!members.values().any(|member| member.code == "retired"));
+    snapshot.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:status","filter":[{"property":"status","op":"=","value":"retired"}]}]})).unwrap());
+    let members = snapshot.expand(&canonical("urn:set")).unwrap();
+    assert_eq!(members.len(), 1);
+    assert!(members.values().next().unwrap().inactive);
+    for change in ["undeclared", "custom", "unknown", "transition", "conflict"] {
+        let mut invalid = source.clone();
+        match change {
+            "undeclared" => {
+                invalid.as_object_mut().unwrap().remove("property");
+            }
+            "custom" => invalid["property"][0]["uri"] = json!("urn:custom-status"),
+            "unknown" => invalid["concept"][0]["property"][0]["valueCode"] = json!("review-needed"),
+            "transition" => invalid["concept"][0]["property"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"code":"retirementDate","valueDateTime":"2025-01-01"})),
+            "conflict" => invalid["concept"][3]["property"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"code":"inactive","valueBoolean":false})),
+            _ => unreachable!(),
+        }
+        assert!(
+            PreparedSystem::prepare_for_r4(serde_json::from_value(invalid).unwrap()).is_err(),
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn graph_validation_preserves_shortest_depth_semantics_in_dense_dags() {
+    let concepts=(0..40).map(|code| json!({"code":code.to_string(),"property":(0..code).map(|parent|json!({"code":"parent","valueCode":parent.to_string()})).collect::<Vec<_>>() })).collect::<Vec<_>>();
+    let system=PreparedSystem::prepare(serde_json::from_value(json!({"url":"urn:dense","content":"complete","hierarchyMeaning":"is-a","concept":concepts})).unwrap()).unwrap();
+    assert_eq!(system.ancestor_depths("39").unwrap().len(), 39);
+    assert!(system
+        .ancestor_depths("39")
+        .unwrap()
+        .values()
+        .all(|depth| *depth == 1));
+    let incomplete = json!({"url":"urn:fragment","content":"fragment","concept":[{"code":"known","property":[{"code":"child","valueCode":"not-in-fragment"}]}]});
+    assert!(
+        PreparedSystem::prepare_for_import(serde_json::from_value(incomplete).unwrap()).is_ok()
+    );
+    let complete = json!({"url":"urn:dangling","content":"complete","concept":[{"code":"known","property":[{"code":"child","valueCode":"unknown"}]}]});
+    assert!(
+        PreparedSystem::prepare(serde_json::from_value(complete).unwrap())
+            .unwrap_err()
+            .0
+            .contains("Unknown hierarchy child")
+    );
+}
+
+#[test]
+fn shared_valueset_diamonds_do_not_re_evaluate_an_exponential_number_of_paths() {
+    let mut state = snapshot(json!({"include":[{"system":"urn:codes","concept":[{"code":"a"}]}]}));
+    for layer in 0..24 {
+        for branch in ["a", "b"] {
+            let imports = if layer == 0 {
+                vec!["urn:set".to_owned()]
+            } else {
+                vec![
+                    format!("urn:diamond:{}:a", layer - 1),
+                    format!("urn:diamond:{}:b", layer - 1),
+                ]
+            };
+            state.value_sets.insert(
+                canonical(&format!("urn:diamond:{layer}:{branch}")),
+                serde_json::from_value(json!({"include":[{"valueSet":imports}]})).unwrap(),
+            );
+        }
+    }
+    let result = state.expand(&canonical("urn:diamond:23:a")).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.values().next().unwrap().code, "a");
+}
+
+#[test]
+fn memoized_valuesets_cannot_bypass_import_depth_limits() {
+    let mut state = snapshot(json!({"include":[{"system":"urn:codes"}]}));
+    for index in 0..20 {
+        let previous = if index == 0 {
+            "urn:set".to_owned()
+        } else {
+            format!("urn:short:{}", index - 1)
+        };
+        state.value_sets.insert(
+            canonical(&format!("urn:short:{index}")),
+            serde_json::from_value(json!({"include":[{"valueSet":[previous]}]})).unwrap(),
+        );
+        let previous = if index == 0 {
+            "urn:short:19".to_owned()
+        } else {
+            format!("urn:long:{}", index - 1)
+        };
+        state.value_sets.insert(
+            canonical(&format!("urn:long:{index}")),
+            serde_json::from_value(json!({"include":[{"valueSet":[previous]}]})).unwrap(),
+        );
+    }
+    state.value_sets.insert(
+        canonical("urn:root"),
+        serde_json::from_value(
+            json!({"include":[{"valueSet":["urn:short:19"]},{"valueSet":["urn:long:19"]}]}),
+        )
+        .unwrap(),
+    );
+    assert!(state
+        .expand(&canonical("urn:root"))
+        .unwrap_err()
+        .0
+        .contains("depth"));
+}
+
+#[test]
+fn r4_scalar_membership_regex_and_direct_child_filters_are_typed_and_bounded() {
+    let definition = json!({"url":"urn:filters","caseSensitive":false,"content":"complete","hierarchyMeaning":"is-a","property":[{"code":"tag"},{"code":"rank"}],"concept":[
+        {"code":"Root","concept":[{"code":"Alpha","property":[{"code":"tag","valueCode":"x"},{"code":"tag","valueString":"yy"},{"code":"rank","valueInteger":2}],"concept":[{"code":"Grandchild"}]},{"code":"Beta","property":[{"code":"tag","valueCode":"z"}]}]},
+        {"code":"Greekα"}
+    ]});
+    let mut state = Snapshot::default();
+    state.systems.insert(
+        canonical("urn:filters"),
+        PreparedSystem::prepare_for_r4(serde_json::from_value(definition.clone()).unwrap())
+            .unwrap(),
+    );
+    for (property, op, value, expected) in [
+        ("code", "regex", "alpha", vec!["Alpha"]),
+        ("code", "regex", "(alpha|beta)", vec!["Alpha", "Beta"]),
+        ("tag", "regex", "y", vec![]),
+        ("tag", "regex", "y+", vec!["Alpha"]),
+        ("code", "in", "alpha,beta", vec!["Alpha", "Beta"]),
+        (
+            "code",
+            "not-in",
+            "root,alpha,beta,greekα",
+            vec!["Grandchild"],
+        ),
+        ("rank", "in", "2,3", vec!["Alpha"]),
+        ("concept", "child-of", "root", vec!["Alpha", "Beta"]),
+        (
+            "concept",
+            "is-a",
+            "root",
+            vec!["Alpha", "Beta", "Grandchild", "Root"],
+        ),
+        (
+            "concept",
+            "generalizes",
+            "grandchild",
+            vec!["Alpha", "Grandchild", "Root"],
+        ),
+    ] {
+        state.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:filters","filter":[{"property":property,"op":op,"value":value}]}]})).unwrap());
+        let members = state.expand(&canonical("urn:set")).unwrap();
+        assert_eq!(
+            members
+                .values()
+                .map(|member| member.code.as_str())
+                .collect::<Vec<_>>(),
+            expected,
+            "{property} {op} {value}"
+        );
+    }
+    for expression in ["(", "(?<=a)b", "a{100000000}"] {
+        state.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:filters","filter":[{"property":"code","op":"regex","value":expression}]}]})).unwrap());
+        assert!(state.expand(&canonical("urn:set")).is_err(), "{expression}");
+    }
+    let too_long = "a".repeat(1025);
+    state.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:filters","filter":[{"property":"code","op":"regex","value":too_long}]}]})).unwrap());
+    assert!(state.expand(&canonical("urn:set")).is_err());
+    // The conservative engine entry point retains its explicit unsupported-filter policy.
+    state.systems.insert(
+        canonical("urn:filters"),
+        PreparedSystem::prepare(serde_json::from_value(definition).unwrap()).unwrap(),
+    );
+    assert!(state
+        .expand(&canonical("urn:set"))
+        .unwrap_err()
+        .0
+        .contains("Unsupported filter"));
+}
+
+#[test]
+fn r4_boolean_properties_use_formal_meanings_and_false_defaults_without_relabeling_custom_data() {
+    for (code, uri, meaningful) in [
+        (
+            "not-selectable",
+            "http://hl7.org/fhir/concept-properties#notSelectable",
+            true,
+        ),
+        (
+            "notSelectable",
+            "http://hl7.org/fhir/concept-properties#notSelectableX",
+            false,
+        ),
+    ] {
+        let source = json!({"url":"urn:flags","content":"complete","property":[{"code":code,"uri":uri,"type":"boolean"}],"concept":[{"code":"Unknown"},{"code":"Selectable","property":[{"code":code,"valueBoolean":false}]},{"code":"Grouping","property":[{"id":"source-flag","extension":[{"url":"urn:source","valueString":"retained"}],"code":code,"valueBoolean":true}]}]});
+        let mut state = Snapshot::default();
+        state.systems.insert(
+            canonical("urn:flags"),
+            PreparedSystem::prepare_for_r4(serde_json::from_value(source.clone()).unwrap())
+                .unwrap(),
+        );
+        state.value_sets.insert(
+            canonical("urn:set"),
+            serde_json::from_value(json!({"include":[{"system":"urn:flags"}]})).unwrap(),
+        );
+        let members = state.expand(&canonical("urn:set")).unwrap();
+        assert_eq!(
+            members
+                .values()
+                .find(|member| member.code == "Grouping")
+                .unwrap()
+                .abstract_code,
+            meaningful
+        );
+        state.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:flags","filter":[{"property":code,"op":"=","value":"false"}]}]})).unwrap());
+        let members = state.expand(&canonical("urn:set")).unwrap();
+        assert_eq!(members.len(), if meaningful { 2 } else { 1 });
+        let mut malformed = source;
+        malformed["concept"][2]["property"][0] = json!({"code":code,"valueString":"true"});
+        if meaningful {
+            assert!(
+                PreparedSystem::prepare_for_r4(serde_json::from_value(malformed).unwrap()).is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn code_knowledge_retains_selected_identity_case_and_incomplete_source_uncertainty() {
+    for (content, complete) in [
+        ("complete", true),
+        ("fragment", false),
+        ("not-present", false),
+    ] {
+        let source = json!({"url":"urn:knowledge","version":"edition","content":content,"caseSensitive":false,"concept":[{"code":"Canonical"}]});
+        let prepared =
+            PreparedSystem::prepare_for_import(serde_json::from_value(source).unwrap()).unwrap();
+        let index = prepared.into_code_index();
+        assert_eq!(
+            index.canonical,
+            Canonical::parse("urn:knowledge", Some("edition")).unwrap()
+        );
+        assert_eq!(index.complete(), complete);
+        assert_eq!(index.resolve("canonical"), Some("Canonical"));
+        assert_eq!(index.resolve("missing"), None);
+        assert!(index.memory_charge() > "Canonical".len());
+    }
+}
+
+#[test]
+fn finite_r4_properties_preserve_declared_types_and_reject_ambiguous_values() {
+    let valid = json!({"url":"urn:typed","content":"complete","property":[{"code":"rank","type":"integer"}],"concept":[{"code":"a","property":[{"code":"rank","id":"element-id","extension":[{"url":"urn:label","valueString":"metadata"}],"valueInteger":7}]}]});
+    assert!(PreparedSystem::prepare_for_r4(serde_json::from_value(valid.clone()).unwrap()).is_ok());
+    for value in [
+        json!({"valueString":"7"}),
+        json!({"valueInteger":2147483648_i64}),
+        json!({"valueInteger":7,"valueBoolean":true}),
+        json!({"valueInteger":"7"}),
+        json!({"valueExpression":{"expression":"7"}}),
+    ] {
+        let mut source = valid.clone();
+        let mut property = value.as_object().unwrap().clone();
+        property.insert("code".into(), json!("rank"));
+        source["concept"][0]["property"][0] = property.into();
+        assert!(PreparedSystem::prepare_for_r4(serde_json::from_value(source).unwrap()).is_err());
+    }
+    let mut source = valid;
+    source["property"][0]["type"] = json!("unsupported-type");
+    assert!(PreparedSystem::prepare_for_r4(serde_json::from_value(source).unwrap()).is_err());
+}
+
+#[test]
+fn integer_filter_admission_does_not_depend_on_whether_concepts_are_present() {
+    let source = json!({"url":"urn:typed","content":"complete","property":[{"code":"rank","type":"integer"}],"concept":[]});
+    let mut snapshot = Snapshot::default();
+    snapshot.systems.insert(
+        canonical("urn:typed"),
+        PreparedSystem::prepare_for_r4(serde_json::from_value(source).unwrap()).unwrap(),
+    );
+    for op in ["=", "in", "not-in"] {
+        for (value, valid) in [
+            ("-2147483648", true),
+            ("2147483648", false),
+            ("not-an-integer", false),
+        ] {
+            snapshot.value_sets.insert(canonical("urn:set"),serde_json::from_value(json!({"include":[{"system":"urn:typed","filter":[{"property":"rank","op":op,"value":value}]}]})).unwrap());
+            let result = snapshot.expand(&canonical("urn:set"));
+            assert_eq!(result.is_ok(), valid, "{op} {value}: {result:?}");
+            if let Ok(members) = result {
+                assert!(members.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn standard_property_aliases_cannot_change_types_or_hide_conflicting_boolean_values() {
+    let source = json!({"url":"urn:typed-flags","content":"fragment","property":[{"code":"flag","uri":"http://hl7.org/fhir/concept-properties#notSelectable","type":"string"}],"concept":[]});
+    assert!(
+        PreparedSystem::prepare_for_import(serde_json::from_value(source.clone()).unwrap()).is_ok()
+    );
+    assert!(
+        PreparedSystem::prepare_for_r4_source(serde_json::from_value(source).unwrap()).is_err()
+    );
+    let source = json!({"url":"urn:typed-flags","content":"fragment","property":[{"code":"first","uri":"http://hl7.org/fhir/concept-properties#notSelectable","type":"boolean"},{"code":"second","uri":"http://hl7.org/fhir/concept-properties#notSelectable","type":"boolean"}],"concept":[{"code":"A","property":[{"code":"first","valueBoolean":false},{"code":"second","valueBoolean":true}]}]});
+    assert!(
+        PreparedSystem::prepare_for_r4_source(serde_json::from_value(source).unwrap()).is_err()
+    );
+}
+
+#[test]
+fn graph_admission_agrees_with_independent_shortest_paths_on_sparse_dense_and_invalid_inputs() {
+    fn reference(parents: &[Vec<usize>]) -> bool {
+        let count = parents.len();
+        if parents.iter().flatten().any(|&parent| parent >= count) {
+            return false;
+        }
+        for start in 0..count {
+            let mut distances = vec![None; count];
+            distances[start] = Some(0);
+            let mut pending = std::collections::VecDeque::from([start]);
+            while let Some(node) = pending.pop_front() {
+                for &parent in &parents[node] {
+                    if parent == start {
+                        return false;
+                    }
+                    if distances[parent].is_none() {
+                        distances[parent] = Some(distances[node].unwrap() + 1);
+                        pending.push_back(parent);
+                    }
+                }
+            }
+            if distances
+                .into_iter()
+                .flatten()
+                .any(|depth| depth > MAX_DEPTH)
+            {
+                return false;
+            }
+        }
+        true
+    }
+    for seed in 0..160 {
+        let count = 2 + seed % 40;
+        let mut parents = vec![Vec::new(); count];
+        for (child, links) in parents.iter_mut().enumerate().skip(1) {
+            match seed % 4 {
+                0 => links.extend(0..child),
+                1 => links.push(child - 1),
+                _ => {
+                    links.push((child - 1) / 2);
+                    links.push((child * (seed + 3) + seed) % child);
+                    links.sort_unstable();
+                    links.dedup();
+                }
+            }
+        }
+        if seed % 7 == 0 {
+            parents[0].push(count - 1);
+        }
+        if seed % 11 == 0 {
+            parents[count - 1].push(count);
+        }
+        let expected = reference(&parents);
+        let source = json!({"url":format!("urn:graph-parity:{seed}"),"content":"complete","caseSensitive":true,"hierarchyMeaning":"is-a","property":[{"code":"parent","uri":"http://hl7.org/fhir/concept-properties#parent","type":"code"}],"concept":parents.iter().enumerate().map(|(index,links)|json!({"code":format!("N{index}"),"property":links.iter().map(|parent|json!({"code":"parent","valueCode":format!("N{parent}")})).collect::<Vec<_>>()})).collect::<Vec<_>>()});
+        let result = PreparedSystem::prepare_for_r4(serde_json::from_value(source).unwrap());
+        assert_eq!(result.is_ok(), expected, "seed {seed}: {result:?}");
+    }
+}

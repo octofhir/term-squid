@@ -157,6 +157,19 @@ async fn perform(
     id: Option<Uuid>,
 ) -> Result<Json<Parameters>, AppError> {
     let context = pair.context(id.is_some())?;
+    if id.is_none()
+        && context.as_ref().is_some_and(|key| {
+            key.url == term_squid_core::ucum::SYSTEM
+                && key
+                    .version
+                    .as_deref()
+                    .is_none_or(|version| version == term_squid_core::ucum::VERSION)
+        })
+    {
+        return Err(AppError::Terminology(term_squid_core::Error(
+            "The bundled UCUM grammar has no implemented is-a subsumption provider".into(),
+        )));
+    }
     let resolved = if let Some(id) = id {
         store
             .resolve_subsumption_by_id(&id, pair.a.code, pair.b.code)
@@ -212,6 +225,7 @@ async fn perform(
             "Subsumption requires an is-a hierarchy".into(),
         ));
     }
+    crate::store::require_complete_hierarchy(resolved.complete)?;
     if resolved.code_a.is_none() || resolved.code_b.is_none() {
         return Err(AppError::NotFound("Subsumption code not found".into()));
     }

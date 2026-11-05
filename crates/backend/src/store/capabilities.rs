@@ -19,7 +19,7 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
         bool,
         sqlx::types::Json<Value>,
     );
-    let rows:Vec<Row>=sqlx::query_as("SELECT s.url,s.version,s.native_provider,row_number() OVER (PARTITION BY s.url ORDER BY s.updated_at DESC,s.id)=1,CASE WHEN octet_length(COALESCE(s.content->'property','[]')::text)<=65536 AND octet_length(COALESCE(s.content->'filter','[]')::text)<=65536 THEN jsonb_build_object('hierarchy',s.hierarchy_meaning,'language',COALESCE(s.content->>'language',r.language),'property',s.content->'property','filter',s.content->'filter') ELSE 'null'::jsonb END FROM code_systems s LEFT JOIN snomed_releases r ON r.code_system_id=s.id WHERE s.content_mode IS DISTINCT FROM 'supplement' ORDER BY s.url,s.updated_at DESC,s.id LIMIT 10001").fetch_all(&mut *tx).await?;
+    let rows:Vec<Row>=sqlx::query_as("SELECT s.url,s.version,s.native_provider,row_number() OVER (PARTITION BY s.url ORDER BY s.updated_at DESC,s.id)=1,CASE WHEN octet_length(COALESCE(s.content->'property','[]')::text)<=65536 AND octet_length(COALESCE(s.content->'filter','[]')::text)<=65536 THEN jsonb_build_object('content',s.content_mode,'hierarchy',s.hierarchy_meaning,'language',COALESCE(s.content->>'language',r.language),'property',s.content->'property','filter',s.content->'filter') ELSE 'null'::jsonb END FROM code_systems s LEFT JOIN snomed_releases r ON r.code_system_id=s.id WHERE s.content_mode IS DISTINCT FROM 'supplement' ORDER BY s.url,s.updated_at DESC,s.id LIMIT 10001").fetch_all(&mut *tx).await?;
     if rows.len() > 10000 {
         return Err(AppError::BadRequest(
             "Terminology inventory exceeds 10000 versions".into(),
@@ -28,7 +28,14 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
     let mut systems: BTreeMap<String, Value> = BTreeMap::new();
     let mut bytes = 0;
     for (url, version, provider, is_default, metadata) in rows {
-        let metadata = metadata.0;
+        let metadata = if url == term_squid_core::ucum::SYSTEM
+            && version.as_deref() == Some(term_squid_core::ucum::VERSION)
+        {
+            // Canonical 2.2 resolves to the bundled grammar, regardless of stored instance metadata.
+            json!({"content":"not-present","language":"en","property":[],"filter":[]})
+        } else {
+            metadata.0
+        };
         if metadata.is_null() {
             return Err(AppError::BadRequest(
                 "CodeSystem metadata exceeds 64 KiB".into(),
@@ -42,8 +49,9 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
                 "Terminology metadata exceeds 32 MiB".into(),
             ));
         }
-        let hierarchy =
-            metadata["hierarchy"] == "is-a" || provider.as_deref() == Some("snomed-rf2");
+        let can_expand = provider.is_some() || metadata["content"] == "complete";
+        let hierarchy = can_expand
+            && (metadata["hierarchy"] == "is-a" || provider.as_deref() == Some("snomed-rf2"));
         let system = systems
             .entry(url.clone())
             .or_insert_with(|| json!({"uri":url,"version":[],"subsumption":false}));
@@ -55,7 +63,16 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
             .filter_map(|p| p["code"].as_str().map(str::to_owned))
             .collect();
         let mut filters: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-        filters.insert("code".into(), ["="].into_iter().collect());
+        filters.insert(
+            "code".into(),
+            if provider.is_none() {
+                ["=", "exists", "in", "not-in", "regex"]
+                    .into_iter()
+                    .collect()
+            } else {
+                ["="].into_iter().collect()
+            },
+        );
         filters.insert(
             "concept".into(),
             if hierarchy {
@@ -66,6 +83,13 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
                 ["="].into_iter().collect()
             },
         );
+        if provider.is_none() {
+            let concept = filters.get_mut("concept").unwrap();
+            concept.extend(["exists", "in", "not-in", "regex"]);
+            if hierarchy {
+                concept.extend(["child-of", "generalizes"]);
+            }
+        }
         if provider.as_deref() == Some("snomed-rf2") {
             filters.get_mut("concept").unwrap().insert("generalizes");
             properties.extend(
@@ -111,10 +135,20 @@ pub(super) async fn systems(pool: &PgPool) -> Result<Vec<Value>, AppError> {
                 && kind.is_some_and(|t| !matches!(t, "string" | "code" | "boolean" | "integer"))
             {
                 ["exists"].into_iter().collect()
+            } else if provider.is_none() {
+                let mut operations: BTreeSet<_> =
+                    ["=", "exists", "in", "not-in"].into_iter().collect();
+                if matches!(kind, Some("string" | "code")) {
+                    operations.insert("regex");
+                }
+                operations
             } else {
                 ["=", "exists"].into_iter().collect()
             };
             filters.insert(property.clone(), operations);
+        }
+        if !can_expand {
+            filters.clear();
         }
         let filter: Vec<_> = filters
             .into_iter()

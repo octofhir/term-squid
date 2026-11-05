@@ -1,10 +1,28 @@
 # Resume development on another device
 
-The user-selected R4 API implementation now covers all 70 declared inputs of six operations, bounded supplements, public read workflows and standalone administration. Read [API_IMPLEMENTATION_REPORT.md](API_IMPLEMENTATION_REPORT.md), [API_REQUIREMENTS.md](API_REQUIREMENTS.md) and [R4_API_CONTRACT.json](R4_API_CONTRACT.json). The full Rust/PostgreSQL checkpoint passes 147 tests; 23 embedded production browser/API scenarios, 29 harness tests and seven unchanged local gates also pass; exact delivery evidence is recorded in the report. Apply migration `20261104000006_supplements` and build frontend before RustEmbed. Preserve provider/registry bounds and do not silently switch to performance work without the next user-selected priority.
+Latest continuation: [request-local terminology resources and finite R4 semantics](REQUEST_CONTEXT_REPORT.md). Bounded `tx-resource` definitions work across all six public operations without publication. The original complete `case` suite passes 6/6 with retention on/off on an empty database, whose public inventory remains empty. The preloaded profile also passes 6/6 and both unchanged local profiles pass 7/7. Preserve temporary/stored instance isolation, canonical/business editions, cancellation bounds, compact code knowledge and explicit provider limits.
+
+The final checkpoint passes **206 Rust/PostgreSQL tests, 38 harness tests and 25 embedded production browser/API scenarios**, plus original/preloaded/cache-parity and restart-recovery checks. The [generated finite comparison](FINITE_DIFFERENTIAL_REPORT.md) adds 208 complete scenarios with independent heap/set expectations.
+
+The [independent general-mode gap audit](ECOSYSTEM_GAP_AUDIT.md) records 110/689 versus 682/689, exact retention parity and the remaining first-failure inventory. It must not be presented as certification.
+
+The [mixed request-context diagnostic](CONTEXT_MIXED_REPORT.md) retains all four matched cohorts, the preparation profile and all regressions; it is separate from the original scorer/composite.
+
+The [final matched performance report](REQUEST_CONTEXT_PERFORMANCE.md) retains all 120 warm-suite windows and 37,208,534 passing response checks across three source-frozen builds. The separate mixed diagnostic passes 105,600 checks across four cohorts. Loaded finite throughput wins coexist with single-client losses, cold-expansion deficits and inter-checkpoint regressions; neither profile establishes a clinical composite or the overall product goal.
+
+A focused post-timing review also reproduces the existing [Unicode comparison boundary](REQUEST_CONTEXT_REPORT.md#remaining-unicode-comparison-boundary) on both older and final artifacts. Some non-ASCII case-insensitive stored and request-local lookups disagree; preserve the exact evidence and define a shared normalization/projection policy before claiming complete equivalence.
+
+The [explicit UCUM composition increment](UCUM_VALUESET_REPORT.md) adds real grammar-backed finite unit lists to expansion and membership, including imported/contextual sets and supplements. Preserve its partial coverage and engine-level prohibition on whole-grammar/filter enumeration.
+
+This supersedes the original unsupported-setup limitation in [the historical ecosystem checkpoint](ECOSYSTEM_R4_REPORT.md). The package/runner and original requests/goldens remain pinned; general-mode coverage is still incomplete. Finite R4 preparation now supports formal boolean/status property meanings, bounded scalar membership/regex/hierarchy filters, actual expansion provenance and validation version directives. Validation uses real designations, preserves the primitive wire contract and reports Coding/CodeableConcept field paths. Local contained ValueSet references share the finite/native loaders while retaining container scope and original JSON. See the latest report for exact final validation and audit counts.
+
+The user-selected R4 API implementation now covers all 70 declared inputs of six operations, bounded supplements, public read workflows and standalone administration. Read [API_IMPLEMENTATION_REPORT.md](API_IMPLEMENTATION_REPORT.md), [API_REQUIREMENTS.md](API_REQUIREMENTS.md) and [R4_API_CONTRACT.json](R4_API_CONTRACT.json). That historical Rust/PostgreSQL checkpoint passes 147 tests; 23 embedded production browser/API scenarios, 29 harness tests and seven unchanged local gates also pass; exact delivery evidence is recorded in the report. Apply migration `20261104000006_supplements` and build frontend before RustEmbed. Preserve provider/registry bounds and do not silently switch to performance work without the next user-selected priority.
 
 The branded UI/admin and local-package increments remain implemented; see [the UI report](UI_ADMIN_IMPLEMENTATION_REPORT.md), [the package report](PACKAGE_IMPORT_REPORT.md) and [NEXT_SESSION_UI.md](NEXT_SESSION_UI.md) when changing those areas. Keep the UI live on 5173 when available. The engine/composite continuation below is a separate workstream; preserve its existing changes and measurements.
 
 The delivery is preserved in `d4bb6c1`, following native-provider checkpoint `b426651`, and integrated with the independent `7cef264` dependency release. The combined workspace version is **0.1.3**, with SQLx 0.9, SHA-2 0.11 and UCUM 0.9.3. Read the post-merge validation in the API report; retain both histories and the independent-core CI guard. The user authorized this commit/push; future commits, pushes, publication and deployment still require their own explicit request.
+
+The subsequent user-requested [local FHIRsmith comparison](FHIRSMITH_API_COMPARISON.md) adds a reusable differential API driver and report without changing the Rust delivery or original benchmark assertions. Selected API expectations pass 44/44 versus 34/44; forty measured windows pass 10,795,783 response checks. Loaded finite reads win, but single-client losses, reference lookup variability and the expansion plateau remain. Fresh upstream coverage is 2/20 versus 3/20 on incomplete content; the extra reference pass uses the upstream target-system URI compatibility convention. Keep standard R4 semantics and do not claim a clinical composite. Raw artifacts remain local; preserve the comparison drivers and reports in this delivery and inspect the actual Git state before continuing. The UI preview remains on 5173 when its development process is available; comparison runners own their temporary local server lifecycle.
 
 ## Goal and current state
 
@@ -26,7 +44,7 @@ Implemented:
 
 - Prepared lookup/validation, finite ValueSets, ConceptMaps and hierarchies with bounded retention and fresh cross-process generation observations. No TTL/stale-error fallback; pool default 32.
 - Inline ValueSet expansion/membership through the finite engine, content-fingerprinted request-local keys, no persistence and explicit unsupported input errors.
-- Ready `octofhir-ucum = 0.9.1`, model 2.2: canonical grammar lookup/CodeSystem validation without SQL and Rust comparability. UCUM ValueSet integration remains incomplete.
+- Ready `octofhir-ucum = 0.9.3`, model 2.2: canonical grammar lookup/CodeSystem validation without SQL and Rust comparability. Explicit finite ValueSet lists now work; whole-grammar enumeration and implicit URI support remain incomplete.
 - Native checksummed RF2 Snapshot import, atomic activation, selected-dialect display projection and bounded active inferred subsumption. A bounded native ValueSet provider now handles implicit whole/hierarchy sets, inline/stored/instance compose, hierarchy and selected property filters. ECL/refsets and mixed native/finite composition remain explicit errors; see the new report.
 - Typed implicit SNOMED whole/isa membership now resolves release, anchor and member in one data statement inside the existing transaction. Allocation churn drops 31%/41%; no cache/TTL, pool or timeout change. See `docs/IMPLICIT_MEMBERSHIP_REPORT.md` for timing variability and retained baseline/candidate evidence. That checkpoint passes 81 Rust tests and 29 harness tests.
 - Native LOINC primary-table import streams checksummed `Loinc.csv`, preserves source fields and atomically activates immutable releases. Numeric reads, implicit numeric membership, explicitly scoped primary filters and mixed native SNOMED/LOINC sets are implemented. Accessory codes and all-code expansion remain explicit errors. Typed `$lookup` returns seven R4 property types. Latest checkpoint: 101 Rust tests and 29 harness tests; see `docs/LOINC_PROVIDER_REPORT.md`.
@@ -38,7 +56,7 @@ Plans and trackers live under `vibe/healthsamurai-*`, `vibe/inline-valueset-*`, 
 
 This is standalone Git, not Arcadia. Preserve any working-tree changes; do not reset/rebase/commit/push automatically.
 
-Install current stable Rust, Git, Docker Compose, Bun and k6; Node 24 is needed for the pinned FHIRsmith reference. The measured machine used Bun 1.4.4, k6 2.3.0 and Node 24.16.0. Do not assume old absolute tool paths or identical hardware. `just` provides the recipes. The first build needs registry access; use Cargo offline flags only after fetching dependencies.
+Install current stable Rust, Git, Docker Compose, Bun and k6; Node 24 is needed for the pinned FHIRsmith reference. The November 5 matched cohorts used Rust 1.99.0, Bun 1.4.3, k6 2.3.0 and Node 24.16.0; frontend delivery uses locked pnpm 10.11.0. Do not assume old absolute tool paths or identical hardware. `just` provides the recipes. The first build needs registry access; use Cargo offline flags only after fetching dependencies.
 
 From the repository root:
 
@@ -53,7 +71,7 @@ CARGO_TARGET_DIR=.benchmarks/target cargo run --release --bin term-squid-cli -- 
 
 TERM_SQUID_TEST_DATABASE_URL='postgresql://benchmark:benchmark@127.0.0.1:15433/term_squid_benchmark' \
   CARGO_TARGET_DIR=.benchmarks/target cargo test --workspace -- --include-ignored
-CARGO_TARGET_DIR=.benchmarks/target cargo clippy --workspace --all-targets -- -D warnings
+CARGO_TARGET_DIR=.benchmarks/target cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 bun test benchmarks
 

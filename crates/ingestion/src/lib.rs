@@ -90,10 +90,22 @@ fn inspect_with_limit(content: &Value, concept_limit: usize, r4_only: bool) -> R
         }
         let definition: term_squid_core::CodeSystem =
             serde_json::from_value(content.clone()).context("Invalid CodeSystem")?;
-        let prepared = term_squid_core::PreparedSystem::prepare_for_import(definition)?;
+        let prepared = if r4_only {
+            term_squid_core::PreparedSystem::prepare_for_r4_source(definition)?
+        } else {
+            term_squid_core::PreparedSystem::prepare_for_import(definition)?
+        };
         records = prepared.concepts.len();
         record_kind = "concepts";
         ensure!(records <= concept_limit, "Concept limit exceeded");
+        ensure!(
+            !r4_only
+                || prepared
+                    .concepts
+                    .keys()
+                    .all(|code| code.chars().count() <= 255),
+            "Concept codes exceed the 255-character projection limit"
+        );
     }
     if r4_only && kind == "ValueSet" {
         if let Some(compose) = content.get("compose") {
@@ -276,6 +288,22 @@ mod tests {
 #[cfg(test)]
 mod definition_tests {
     use super::*;
+    #[test]
+    fn r4_inspection_rejects_mistyped_properties_before_publication() {
+        let mut resource = serde_json::json!({"resourceType":"CodeSystem","url":"urn:flag-types","status":"active","content":"fragment","property":[{"code":"grouping","uri":"http://hl7.org/fhir/concept-properties#notSelectable","type":"boolean"}],"concept":[{"code":"A","property":[{"code":"grouping","valueCode":"true"}]}]});
+        assert!(inspect(&resource).is_err());
+        // The legacy CLI format remains unchanged; readers still reject unsafe flag interpretation.
+        assert!(inspect_cli(&resource).is_ok());
+        resource["concept"][0]["property"][0] =
+            serde_json::json!({"code":"grouping","valueBoolean":true});
+        assert_eq!(inspect(&resource).unwrap().records, 1);
+        for code in [String::new(), "x".repeat(256)] {
+            resource["concept"][0]["code"] = code.into();
+            assert!(inspect(&resource).is_err());
+        }
+        resource["concept"][0]["code"] = "界".repeat(255).into();
+        assert_eq!(inspect(&resource).unwrap().records, 1);
+    }
     #[test]
     fn definition_structure_and_entry_budgets_are_explicit() {
         let mut resource = serde_json::json!({"resourceType":"ValueSet","url":"urn:bounded","status":"active","compose":{"include":[{"system":"urn:codes","concept":[{"code":"a"}]}]}});

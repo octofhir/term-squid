@@ -16,11 +16,13 @@ type Key = (Canonical, Option<Uuid>);
 enum Snapshot {
     Prepared {
         plan: PreparedHierarchy,
+        complete: bool,
         url: String,
         version: Option<String>,
     },
     Unsupported {
         meaning: Option<String>,
+        complete: bool,
         url: String,
         version: Option<String>,
     },
@@ -30,13 +32,16 @@ enum Snapshot {
 impl Snapshot {
     fn charge(&self) -> usize {
         match self {
-            Self::Prepared { plan, url, version } => {
+            Self::Prepared {
+                plan, url, version, ..
+            } => {
                 plan.memory_charge() + url.capacity() + version.as_ref().map_or(0, String::capacity)
             }
             Self::Unsupported {
                 meaning,
                 url,
                 version,
+                ..
             } => {
                 4096 + meaning.as_ref().map_or(0, String::capacity)
                     + url.capacity()
@@ -46,21 +51,35 @@ impl Snapshot {
         }
     }
     fn resolve(&self, a: &str, b: &str, observed: &Observation) -> Read {
-        let (url, version, meaning, found) = match self {
+        let (url, version, meaning, complete, found) = match self {
             Self::Sql => return Read::Sql,
             Self::Unsupported {
                 meaning,
                 url,
                 version,
-            } => (url.clone(), version.clone(), meaning.clone(), None),
-            Self::Prepared { plan, url, version } => (
+                complete,
+            } => (
+                url.clone(),
+                version.clone(),
+                meaning.clone(),
+                *complete,
+                None,
+            ),
+            Self::Prepared {
+                plan,
+                url,
+                version,
+                complete,
+            } => (
                 url.clone(),
                 version.clone(),
                 Some("is-a".into()),
+                *complete,
                 Some(plan.resolve(a, b, &observed.key_a, &observed.key_b)),
             ),
         };
         Read::Resolved(ResolvedSubsumption {
+            complete,
             url,
             version,
             hierarchy_meaning: meaning,
@@ -85,6 +104,7 @@ struct Metadata {
     hierarchy_meaning: Option<String>,
     case_sensitive: bool,
     native_provider: Option<String>,
+    content_mode: Option<String>,
 }
 
 #[derive(Default)]
@@ -169,17 +189,20 @@ impl HierarchyPlans {
             return Ok(plan.resolve(a, b, &observed));
         }
         let metadata = sqlx::query_as::<_,Metadata>(
-            "SELECT id,url,version,hierarchy_meaning,case_sensitive,native_provider FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+            "SELECT id,url,version,hierarchy_meaning,case_sensitive,native_provider,content_mode FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
         let Some(metadata) = metadata else {
             tx.commit().await?;
             return Ok(Read::Missing);
         };
+        let complete = metadata.native_provider.is_some()
+            || metadata.content_mode.as_deref() == Some("complete");
         let (snapshot, concepts, relationships) = if metadata.hierarchy_meaning.as_deref()
             != Some("is-a")
         {
             (
                 Some(Snapshot::Unsupported {
+                    complete,
                     meaning: metadata.hierarchy_meaning.clone(),
                     url: metadata.url.clone(),
                     version: metadata.version.clone(),
@@ -236,6 +259,7 @@ impl HierarchyPlans {
                 } else {
                     Snapshot::Prepared {
                         plan,
+                        complete,
                         url: metadata.url,
                         version: metadata.version,
                     }

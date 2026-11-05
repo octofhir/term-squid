@@ -55,7 +55,15 @@ async fn main() -> Result<()> {
     tracing::info!("Database connection verified");
 
     // Create store
-    let store: Arc<dyn TerminologyStore> = Arc::new(PostgresStore::new(pool.clone()));
+    let store: Arc<dyn TerminologyStore> = Arc::new(if config.terminology_prepared_cache {
+        PostgresStore::new(pool.clone())
+    } else {
+        PostgresStore::without_prepared_cache(pool.clone())
+    });
+    tracing::info!(
+        enabled = config.terminology_prepared_cache,
+        "Prepared data retention configured"
+    );
     tracing::info!("PostgreSQL store initialized");
 
     // Build application router with embedded static files

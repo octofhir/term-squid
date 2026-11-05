@@ -144,14 +144,25 @@ impl ExpansionOptions {
                         }
                     }
                     if self.date.is_some() || checked.contains_key(&key.url) {
-                        let id =
-                            selection::id(tx, Family::System, &key, None, self.date.as_deref())
-                                .await?;
-                        let version: Option<String> =
-                            sqlx::query_scalar("SELECT version FROM code_systems WHERE id=$1")
-                                .bind(id)
-                                .fetch_one(&mut **tx)
-                                .await?;
+                        let version: Option<String> = if super::ucum_compose::bundled(&key) {
+                            super::options::check_resource_date(
+                                &serde_json::json!({"date":term_squid_core::ucum::REVISION_DATE}),
+                                self.date.as_deref(),
+                            )?;
+                            Some(term_squid_core::ucum::VERSION.into())
+                        } else {
+                            let id =
+                                selection::id(tx, Family::System, &key, None, self.date.as_deref())
+                                    .await?;
+                            if let Some(entry) = super::transient::by_id(id) {
+                                entry.resource["version"].as_str().map(str::to_owned)
+                            } else {
+                                sqlx::query_scalar("SELECT version FROM code_systems WHERE id=$1")
+                                    .bind(id)
+                                    .fetch_one(&mut **tx)
+                                    .await?
+                            }
+                        };
                         if checked
                             .get(&key.url)
                             .is_some_and(|expected| Some(expected) != version.as_ref())

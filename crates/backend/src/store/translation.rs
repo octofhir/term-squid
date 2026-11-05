@@ -84,6 +84,26 @@ pub(super) async fn run(
     let mut roots = Vec::new();
     let mut raw = BTreeMap::new();
     let mut pending = Vec::new();
+    let temporary_maps = if request.id.is_none() && request.inline.is_none() {
+        if let Some(url) = request.url {
+            super::transient::select(
+                super::transient::Kind::Map,
+                url,
+                request.version,
+                None,
+                None,
+            )?
+            .into_iter()
+            .collect::<Vec<_>>()
+        } else {
+            super::transient::current()
+                .map(|context| context.maps(request.version))
+                .transpose()?
+                .unwrap_or_default()
+        }
+    } else {
+        Vec::new()
+    };
     let rows: Vec<MapRow> = if let Some(resource) = request.inline {
         let key = Canonical::parse(
             resource["url"]
@@ -98,6 +118,8 @@ pub(super) async fn run(
             .len() as i64;
         raw.insert(key, resource.clone());
         Vec::new()
+    } else if request.url.is_some() && !temporary_maps.is_empty() {
+        Vec::new()
     } else {
         let canonical = request
             .url
@@ -111,6 +133,35 @@ pub(super) async fn run(
         sqlx::query_as("SELECT DISTINCT ON (url) url,version,CASE WHEN octet_length(content::text)<=$7 THEN content END,octet_length(content::text)::bigint FROM concept_maps WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3 IS NULL AND (($1::text IS NOT NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) OR ($1 IS NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(content->'group','[]')) g WHERE g->>CASE WHEN $4 THEN 'target' ELSE 'source' END=ANY($5::text[])) AND ($6::text IS NULL OR version=$6)))) ORDER BY url,updated_at DESC,id LIMIT 129")
             .bind(canonical.as_ref().map(|c| c.url.as_str())).bind(canonical.as_ref().and_then(|c| c.version.as_deref())).bind(request.id).bind(request.reverse).bind(systems).bind(request.version).bind(budget).fetch_all(&mut *tx).await?
     };
+    let mut rows = rows;
+    rows.retain(|(url, _, _, _)| {
+        !temporary_maps
+            .iter()
+            .any(|entry| entry.resource["url"] == url.as_str())
+    });
+    for entry in temporary_maps {
+        let matches = request.url.is_some()
+            || entry.resource["group"].as_array().is_some_and(|groups| {
+                groups.iter().any(|group| {
+                    group[if request.reverse { "target" } else { "source" }]
+                        .as_str()
+                        .is_some_and(|system| {
+                            request
+                                .codes
+                                .iter()
+                                .any(|code| code.system.or(inferred.as_deref()) == Some(system))
+                        })
+                })
+            });
+        if matches {
+            rows.push((
+                entry.resource["url"].as_str().unwrap().into(),
+                entry.resource["version"].as_str().map(str::to_owned),
+                Some(sqlx::types::Json((*entry.resource).clone())),
+                entry.bytes as i64,
+            ));
+        }
+    }
     if rows.len() > 128 {
         return Err(AppError::BadRequest(
             "ConceptMap discovery exceeds 128 maps; specify a URL".into(),
@@ -156,8 +207,23 @@ pub(super) async fn run(
                 "ConceptMap dependency budget exceeded".into(),
             ));
         }
-        let row: Option<MapRow> = sqlx::query_as("SELECT url,version,CASE WHEN octet_length(content::text)<=$3 THEN content END,octet_length(content::text)::bigint FROM concept_maps WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1")
-            .bind(&key.url).bind(&key.version).bind(budget).fetch_optional(&mut *tx).await?;
+        let row: Option<MapRow> = if let Some(entry) = super::transient::select(
+            super::transient::Kind::Map,
+            &key.url,
+            key.version.as_deref(),
+            None,
+            None,
+        )? {
+            Some((
+                entry.resource["url"].as_str().unwrap().into(),
+                entry.resource["version"].as_str().map(str::to_owned),
+                Some(sqlx::types::Json((*entry.resource).clone())),
+                entry.bytes as i64,
+            ))
+        } else {
+            sqlx::query_as("SELECT url,version,CASE WHEN octet_length(content::text)<=$3 THEN content END,octet_length(content::text)::bigint FROM concept_maps WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1")
+                .bind(&key.url).bind(&key.version).bind(budget).fetch_optional(&mut *tx).await?
+        };
         let (url, version, resource, bytes) = row.ok_or_else(|| {
             AppError::NotFound(format!("Referenced ConceptMap {} not found", key.url))
         })?;
@@ -262,17 +328,44 @@ pub(super) async fn run(
                             version,
                             group,
                         } => {
-                            let rows: Vec<(String,Option<String>,Option<String>)> = sqlx::query_as("SELECT c.code,c.display,s.version FROM (SELECT id,version,CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END mode FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1) s JOIN concepts c ON c.code_system_id=s.id WHERE s.mode='complete' ORDER BY c.code LIMIT 10001")
-                                .bind(&system).bind(&version).fetch_all(&mut *tx).await?;
-                            if rows.len() > 10000 {
-                                return Err(AppError::BadRequest(
-                                    "Reverse fixed mapping exceeds 10000 source codes".into(),
-                                ));
-                            }
-                            let complete: Option<String> = sqlx::query_scalar("SELECT CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1").bind(&system).bind(&version).fetch_optional(&mut *tx).await?;
-                            if complete.as_deref() != Some("complete") {
-                                return Err(AppError::BadRequest("Reverse fixed mapping requires a complete known source CodeSystem".into()));
-                            }
+                            let rows = if let Some(entry) = super::transient::select(
+                                super::transient::Kind::System,
+                                &system,
+                                version.as_deref(),
+                                None,
+                                None,
+                            )? {
+                                let prepared = entry.system.as_ref().filter(|_| entry.resource["content"] == "complete").ok_or_else(|| AppError::BadRequest("Reverse fixed mapping requires a complete known source CodeSystem".into()))?;
+                                if prepared.concepts.len() > 10000 {
+                                    return Err(AppError::BadRequest(
+                                        "Reverse fixed mapping exceeds 10000 source codes".into(),
+                                    ));
+                                }
+                                prepared
+                                    .concepts
+                                    .values()
+                                    .map(|concept| {
+                                        (
+                                            concept.code.clone(),
+                                            concept.display.clone(),
+                                            prepared.canonical.version.clone(),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                let rows: Vec<(String,Option<String>,Option<String>)> = sqlx::query_as("SELECT c.code,c.display,s.version FROM (SELECT id,version,CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END mode FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1) s JOIN concepts c ON c.code_system_id=s.id WHERE s.mode='complete' ORDER BY c.code LIMIT 10001")
+                                    .bind(&system).bind(&version).fetch_all(&mut *tx).await?;
+                                if rows.len() > 10000 {
+                                    return Err(AppError::BadRequest(
+                                        "Reverse fixed mapping exceeds 10000 source codes".into(),
+                                    ));
+                                }
+                                let complete: Option<String> = sqlx::query_scalar("SELECT CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1").bind(&system).bind(&version).fetch_optional(&mut *tx).await?;
+                                if complete.as_deref() != Some("complete") {
+                                    return Err(AppError::BadRequest("Reverse fixed mapping requires a complete known source CodeSystem".into()));
+                                }
+                                rows
+                            };
                             for (candidate, display, version) in rows {
                                 if plan.fallback_accepts(
                                     group,
