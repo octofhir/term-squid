@@ -1,5 +1,5 @@
 //! Generation-checked hierarchy snapshots over the same projections as atomic SQL.
-use super::generation::{GenerationReads, Observation};
+use super::generation::{Family, GenerationReads, Observation};
 use crate::{error::AppError, models::ResolvedSubsumption};
 use sqlx::{Executor, PgPool, Postgres};
 use std::{collections::BTreeMap, sync::Arc};
@@ -17,6 +17,7 @@ enum Snapshot {
     Prepared {
         plan: PreparedHierarchy,
         complete: bool,
+        case_sensitive: bool,
         url: String,
         version: Option<String>,
     },
@@ -30,6 +31,15 @@ enum Snapshot {
 }
 
 impl Snapshot {
+    fn exact(&self) -> bool {
+        matches!(
+            self,
+            Self::Prepared {
+                case_sensitive: true,
+                ..
+            }
+        )
+    }
     fn charge(&self) -> usize {
         match self {
             Self::Prepared {
@@ -70,6 +80,7 @@ impl Snapshot {
                 url,
                 version,
                 complete,
+                ..
             } => (
                 url.clone(),
                 version.clone(),
@@ -173,9 +184,37 @@ impl HierarchyPlans {
             return Ok(Read::Sql);
         }
         let key = (root.clone(), id);
-        let observed = generations.hierarchy(a, b).await?;
-        if let Some(plan) = self.cached(observed.generation, &key).await {
+        let retained = {
+            let cache = self.cache.lock().await;
+            cache
+                .entries
+                .get(&key)
+                .filter(|(plan, _)| plan.exact())
+                .map(|(plan, _)| (cache.generation, Arc::downgrade(plan)))
+        };
+        let exact = retained.is_some();
+        // Retention is only a weak hint until a fresh observation confirms its
+        // generation. Exact plans do not need database-folded comparison keys.
+        let observed = if exact {
+            Observation {
+                generation: generations.current(Family::Hierarchy).await?,
+                ..Observation::default()
+            }
+        } else {
+            generations.hierarchy(a, b).await?
+        };
+        if let Some(plan) = retained
+            .filter(|(generation, _)| *generation == observed.generation)
+            .and_then(|(_, plan)| plan.upgrade())
+        {
             return Ok(plan.resolve(a, b, &observed));
+        }
+        if let Some(plan) = self.cached(observed.generation, &key).await {
+            // A folded plan installed after our exact hint needs comparison keys
+            // from the existing cold repeatable-read transaction, never empty keys.
+            if !exact || plan.exact() {
+                return Ok(plan.resolve(a, b, &observed));
+            }
         }
         // Warm reads never wait for cold admission or hold a cache lock across SQL.
         let admission = self.preparation.clone().lock_owned().await;
@@ -195,8 +234,9 @@ impl HierarchyPlans {
             tx.commit().await?;
             return Ok(Read::Missing);
         };
-        let complete = metadata.native_provider.is_some()
-            || metadata.content_mode.as_deref() == Some("complete");
+        let complete = metadata.native_provider.as_deref() != Some("rxnorm-rrf")
+            && (metadata.native_provider.is_some()
+                || metadata.content_mode.as_deref() == Some("complete"));
         let (snapshot, concepts, relationships) = if metadata.hierarchy_meaning.as_deref()
             != Some("is-a")
         {
@@ -260,6 +300,7 @@ impl HierarchyPlans {
                     Snapshot::Prepared {
                         plan,
                         complete,
+                        case_sensitive: metadata.case_sensitive,
                         url: metadata.url,
                         version: metadata.version,
                     }

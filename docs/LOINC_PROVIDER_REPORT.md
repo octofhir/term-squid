@@ -1,5 +1,9 @@
 # Native LOINC primary-table provider and typed lookup
 
+This is a historical checkpoint. The later [bounded mixed-provider increment](MIXED_VALUESET_REPORT.md) removes the ordinary finite-provider composition limitation without adding LOINC accessory content or changing primary-table projections. Historical measurements below are not rerun.
+
+The subsequent [primary Part-link increment](LOINC_PARTS_SNOMED_REFSETS_REPORT.md) adds optional source-backed coded axes while retaining raw labels and old source identities. It supersedes the blanket coded-axis limitation below, not the independent Part registry/hierarchy, answer/list/Group or clinical-performance limits.
+
 November 3, 2026. This increment follows [implicit SNOMED membership](IMPLICIT_MEMBERSHIP_REPORT.md). It implements a missing ingestion/provider foundation while full clinical archives are unavailable. Generated fixtures and measurements are diagnostic, not a substitute for the pinned HealthSamurai corpus.
 
 ## Import and activation

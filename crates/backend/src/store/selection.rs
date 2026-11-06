@@ -148,8 +148,9 @@ pub(super) async fn infer_system(
                 "ValueSet context dependency limit exceeded".into(),
             ));
         }
-        let implicit =
-            term_squid_core::snomed::implicit(&key)?.or(term_squid_core::loinc::implicit(&key)?);
+        let implicit = term_squid_core::snomed::implicit(&key)?
+            .or(term_squid_core::loinc::implicit(&key)?)
+            .or(term_squid_core::rxnorm::implicit(&key)?);
         let local = contained.is_local(&key);
         let mut resource = if let Some(resource) = contained.take(&key) {
             options::check_resource_date(&resource, date)?;

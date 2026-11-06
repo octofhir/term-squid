@@ -5,6 +5,7 @@ mod designations;
 mod expansion;
 pub use expansion::ExpansionPage;
 mod expansion_options;
+pub(crate) mod finite_bridge;
 mod selection;
 mod supplements;
 pub use expansion_options::ExpansionOptions;
@@ -34,6 +35,7 @@ pub use traits::TerminologyStore;
 
 mod implicit_membership;
 mod native_valueset;
+mod snomed_ecl;
 mod value_set;
 pub use value_set::{ValueSetOperation, ValueSetPage, ValueSetRequest, ValueSetResult};
 

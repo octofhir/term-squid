@@ -1,5 +1,7 @@
 # Explicit UCUM ValueSet composition
 
+Later continuation: [bounded mixed-provider ValueSets](MIXED_VALUESET_REPORT.md) now combine explicit grammar lists with supported native SNOMED/LOINC selections. The whole-grammar/accessory/provider limits and historical evidence below remain.
+
 November 5, 2026. Finite ValueSets can now select explicit UCUM expressions through the real bundled grammar. This extends the [canonical lookup/validation provider](UCUM_PROVIDER_REPORT.md); it does not enumerate all possible units or claim complete ecosystem conformance.
 
 ## Supported behavior

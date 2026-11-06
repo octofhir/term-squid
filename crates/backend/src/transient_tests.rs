@@ -449,6 +449,9 @@ fn temporary_supplements_select_one_edition_and_honor_the_historical_cutoff() {
                 language: None,
                 relationships: false,
                 metadata: true,
+                require_semantic_types: false,
+                require_attributes: false,
+                require_primary_links: false,
             })
             .unwrap()
             .designations;

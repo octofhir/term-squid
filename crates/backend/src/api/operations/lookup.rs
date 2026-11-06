@@ -226,6 +226,15 @@ async fn perform_lookup(
                 id,
                 code: input.code,
                 metadata: options.language.is_some() || !options.properties.is_empty(),
+                require_semantic_types: options
+                    .properties
+                    .iter()
+                    .any(|property| matches!(*property, "TUI" | "STN" | "STY")),
+                require_attributes: options.properties.contains(&"NDC"),
+                require_primary_links: options
+                    .properties
+                    .iter()
+                    .any(|property| term_squid_core::loinc::PrimaryAxis::parse(property).is_some()),
                 date: options.date,
                 language: options.language,
                 relationships: options.wants("parent") || options.wants("child"),

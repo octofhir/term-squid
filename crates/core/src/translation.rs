@@ -72,6 +72,7 @@ pub struct TranslationDependency<'a> {
 pub struct TranslationProduct {
     pub element: String,
     pub system: Option<String>,
+    pub version: Option<String>,
     pub code: String,
     pub display: Option<String>,
 }
@@ -168,8 +169,20 @@ impl PreparedConceptMap {
                             prepared.conditional_codes.insert(code.clone());
                         }
                     }
-                    let conditions = criteria(target, "dependsOn", &mut plan.charge, &mut edges)?;
-                    let products = criteria(target, "product", &mut plan.charge, &mut edges)?;
+                    let conditions = criteria(
+                        target,
+                        "dependsOn",
+                        prepared.source.as_deref(),
+                        &mut plan.charge,
+                        &mut edges,
+                    )?;
+                    let products = criteria(
+                        target,
+                        "product",
+                        prepared.target.as_deref(),
+                        &mut plan.charge,
+                        &mut edges,
+                    )?;
                     if target.get("relationship").is_some() {
                         return Err(Error(
                             "R5 ConceptMap relationship is not an R4 equivalence".into(),
@@ -178,7 +191,12 @@ impl PreparedConceptMap {
                     let equivalence = target
                         .get("equivalence")
                         .and_then(Value::as_str)
-                        .unwrap_or("equivalent");
+                        .ok_or_else(|| {
+                            Error(
+                                "R4 mapping target equivalence is required and must be a code"
+                                    .into(),
+                            )
+                        })?;
                     if !matches!(
                         equivalence,
                         "relatedto"
@@ -483,17 +501,16 @@ impl PreparedConceptMap {
                     if choices.is_empty() {
                         return Err(Error(format!("Mapping requires dependency {property}")));
                     }
-                    let context = condition
-                        .system
-                        .as_deref()
-                        .map(|s| crate::Canonical::parse(s, None))
-                        .transpose()?;
+                    let context = condition.system.as_deref().ok_or_else(|| {
+                        Error("Mapping dependency system cannot be resolved".into())
+                    })?;
+                    let context = crate::Canonical::parse(context, None)?;
                     if !choices.iter().any(|d| {
                         d.code == value
-                            && context.as_ref().is_none_or(|c| {
-                                d.system == Some(c.url.as_str())
-                                    && c.version.as_deref().is_none_or(|v| d.version == Some(v))
-                            })
+                            // A request Coding without a system uses this input's
+                            // namespace, never an arbitrary criterion namespace.
+                            && d.system.unwrap_or(system) == context.url
+                            && context.version.as_deref().is_none_or(|v| d.version == Some(v))
                     }) {
                         applies = false;
                         break;
@@ -505,6 +522,12 @@ impl PreparedConceptMap {
                 let products = products
                     .iter()
                     .map(|p| {
+                        let context = crate::Canonical::parse(
+                            p.system.as_deref().ok_or_else(|| {
+                                Error("Mapping product system cannot be resolved".into())
+                            })?,
+                            None,
+                        )?;
                         Ok(TranslationProduct {
                             element: p
                                 .property
@@ -513,7 +536,8 @@ impl PreparedConceptMap {
                                     Error("Mapping product property is required".into())
                                 })?
                                 .to_string(),
-                            system: p.system.as_ref().map(ToString::to_string),
+                            system: Some(context.url),
+                            version: context.version,
                             code: p
                                 .code
                                 .as_ref()
@@ -607,6 +631,7 @@ impl PreparedConceptMap {
 fn criteria(
     value: &Value,
     key: &str,
+    default_system: Option<&str>,
     charge: &mut usize,
     records: &mut usize,
 ) -> Result<Vec<Criterion>> {
@@ -623,9 +648,20 @@ fn criteria(
             return Err(Error("ConceptMap detail record limit exceeded".into()));
         }
         *charge += 256;
+        let system = match value.get("system") {
+            Some(system) => system.as_str().filter(|s| !s.is_empty()),
+            None => default_system.filter(|s| !s.is_empty()),
+        }
+        .ok_or_else(|| {
+            Error(format!(
+                "ConceptMap {key} system cannot be resolved from its group"
+            ))
+        })?;
+        crate::Canonical::parse(system, None)?;
+        *charge += 128 + system.len() * 8;
         result.push(Criterion {
             property: text(value, "property", charge),
-            system: text(value, "system", charge),
+            system: Some(Arc::from(system)),
             code: text(value, "value", charge),
             display: text(value, "display", charge),
         });
@@ -652,6 +688,223 @@ fn reverse_equivalence(value: &str) -> &str {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn safety_map() -> Value {
+        json!({"group":[{"source":"urn:s","sourceVersion":"1","target":"urn:t","targetVersion":"2","element":[{"code":"a","target":[{"code":"b","equivalence":"equivalent"}]}]}]})
+    }
+    #[test]
+    fn every_target_requires_an_explicit_valid_r4_modifier() {
+        let mut missing = safety_map();
+        missing["group"][0]["element"][0]["target"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("equivalence");
+        assert!(PreparedConceptMap::prepare(&missing).is_err());
+        for value in [
+            Value::Null,
+            json!(true),
+            json!(3),
+            json!([]),
+            json!({}),
+            json!(""),
+            json!("Equivalent"),
+            json!("not-a-relation"),
+        ] {
+            let mut invalid = safety_map();
+            invalid["group"][0]["element"][0]["target"][0]["equivalence"] = value;
+            assert!(PreparedConceptMap::prepare(&invalid).is_err(), "{invalid}");
+        }
+        // Neither an unrelated source code nor a later positive target hides a bad modifier.
+        missing["group"][0]["element"][0]["target"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"code":"c","equivalence":"equal"}));
+        assert!(PreparedConceptMap::prepare(&missing).is_err());
+    }
+    #[test]
+    fn all_ten_r4_equivalences_and_codeless_negatives_keep_their_meaning() {
+        for equivalence in [
+            "relatedto",
+            "equivalent",
+            "equal",
+            "wider",
+            "subsumes",
+            "narrower",
+            "specializes",
+            "inexact",
+            "unmatched",
+            "disjoint",
+        ] {
+            let mut map = safety_map();
+            let target = &mut map["group"][0]["element"][0]["target"][0];
+            target["equivalence"] = equivalence.into();
+            let negative = matches!(equivalence, "unmatched" | "disjoint");
+            if negative {
+                target.as_object_mut().unwrap().remove("code");
+            }
+            map["group"][0]["unmapped"] = json!({"mode":"provided"});
+            let plan = PreparedConceptMap::prepare(&map).unwrap();
+            let matched = plan
+                .translate_resolved("urn:s", Some("1"), "a", None, false, &[])
+                .unwrap();
+            assert_eq!(matched.matches.len(), usize::from(!negative));
+            if let Some(value) = matched.matches.first() {
+                assert_eq!(value.equivalence, equivalence);
+                assert_eq!(value.version.as_deref(), Some("2"));
+                let reversed = plan
+                    .translate_resolved("urn:t", Some("2"), "b", None, true, &[])
+                    .unwrap();
+                assert_eq!(
+                    reversed.matches[0].equivalence,
+                    reverse_equivalence(equivalence)
+                );
+                assert_eq!(reversed.matches[0].version.as_deref(), Some("1"));
+            }
+        }
+    }
+    #[test]
+    fn omitted_mapping_namespaces_are_group_relative_and_reverse_with_products() {
+        let mut map = safety_map();
+        let target = &mut map["group"][0]["element"][0]["target"][0];
+        target["dependsOn"] = json!([{"property":"urn:axis","value":"X"}]);
+        target["product"] = json!([{"property":"urn:result","value":"Y"}]);
+        let plan = PreparedConceptMap::prepare(&map).unwrap();
+        for system in [None, Some("urn:s"), Some("urn:evil")] {
+            let dependencies = [TranslationDependency {
+                element: "urn:axis",
+                system,
+                version: None,
+                code: "X",
+            }];
+            let matched = plan
+                .translate_resolved("urn:s", Some("1"), "a", None, false, &dependencies)
+                .unwrap();
+            assert_eq!(
+                matched.matches.len(),
+                usize::from(system != Some("urn:evil"))
+            );
+            if let Some(value) = matched.matches.first() {
+                assert_eq!(value.products[0].system.as_deref(), Some("urn:t"));
+                assert_eq!(value.products[0].version, None);
+            }
+        }
+        let dependencies = [TranslationDependency {
+            element: "urn:result",
+            system: None,
+            version: None,
+            code: "Y",
+        }];
+        let matched = plan
+            .translate_resolved("urn:t", Some("2"), "b", None, true, &dependencies)
+            .unwrap();
+        assert_eq!(
+            matched.matches[0].products[0].system.as_deref(),
+            Some("urn:s")
+        );
+        assert_eq!(matched.matches[0].products[0].version, None);
+        let dependencies = [TranslationDependency {
+            system: Some("urn:s"),
+            ..dependencies[0]
+        }];
+        assert!(plan
+            .translate_resolved("urn:t", Some("2"), "b", None, true, &dependencies)
+            .unwrap()
+            .matches
+            .is_empty());
+    }
+    #[test]
+    fn product_canonicals_keep_explicit_versions_in_forward_and_reverse_outputs() {
+        for versioned in [false, true] {
+            let mut map = safety_map();
+            let target = &mut map["group"][0]["element"][0]["target"][0];
+            target["dependsOn"] = json!([{"property":"urn:axis","system":if versioned {"urn:axis-system|in-v1"} else {"urn:axis-system"},"value":"X"}]);
+            target["product"] = json!([{"property":"urn:result","system":if versioned {"urn:product-system|out-v2"} else {"urn:product-system"},"value":"Y"}]);
+            let plan = PreparedConceptMap::prepare(&map).unwrap();
+            let dependency = [TranslationDependency {
+                element: "urn:axis",
+                system: Some("urn:axis-system"),
+                version: versioned.then_some("in-v1"),
+                code: "X",
+            }];
+            let forward = plan
+                .translate_resolved("urn:s", Some("1"), "a", None, false, &dependency)
+                .unwrap();
+            assert_eq!(forward.matches[0].version.as_deref(), Some("2"));
+            assert_eq!(
+                forward.matches[0].products[0].system.as_deref(),
+                Some("urn:product-system")
+            );
+            assert_eq!(
+                forward.matches[0].products[0].version.as_deref(),
+                versioned.then_some("out-v2")
+            );
+            let dependency = [TranslationDependency {
+                element: "urn:result",
+                system: Some("urn:product-system"),
+                version: versioned.then_some("out-v2"),
+                code: "Y",
+            }];
+            let reverse = plan
+                .translate_resolved("urn:t", Some("2"), "b", None, true, &dependency)
+                .unwrap();
+            assert_eq!(reverse.matches[0].version.as_deref(), Some("1"));
+            assert_eq!(
+                reverse.matches[0].products[0].system.as_deref(),
+                Some("urn:axis-system")
+            );
+            assert_eq!(
+                reverse.matches[0].products[0].version.as_deref(),
+                versioned.then_some("in-v1")
+            );
+        }
+    }
+    #[test]
+    fn explicit_mapping_namespaces_win_and_missing_default_is_never_wildcard() {
+        let mut map = safety_map();
+        map["group"][0]["element"][0]["target"][0]["dependsOn"] =
+            json!([{"property":"urn:axis","system":"urn:external|v1","value":"X"}]);
+        let plan = PreparedConceptMap::prepare(&map).unwrap();
+        for (system, version, expected) in [
+            (None, None, false),
+            (Some("urn:s"), Some("v1"), false),
+            (Some("urn:external"), None, false),
+            (Some("urn:external"), Some("v1"), true),
+        ] {
+            let dependencies = [TranslationDependency {
+                element: "urn:axis",
+                system,
+                version,
+                code: "X",
+            }];
+            assert_eq!(
+                !plan
+                    .translate_resolved("urn:s", Some("1"), "a", None, false, &dependencies)
+                    .unwrap()
+                    .matches
+                    .is_empty(),
+                expected
+            );
+        }
+        for (key, group_key) in [("dependsOn", "source"), ("product", "target")] {
+            let mut unresolved = safety_map();
+            unresolved["group"][0]["element"][0]["target"][0][key] =
+                json!([{"property":"urn:axis","value":"X"}]);
+            unresolved["group"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(group_key);
+            assert!(PreparedConceptMap::prepare(&unresolved).is_err());
+            unresolved["group"][0][group_key] = if group_key == "source" {
+                "urn:s".into()
+            } else {
+                "urn:t".into()
+            };
+            for system in [Value::Null, json!(true), json!(""), json!([])] {
+                unresolved["group"][0]["element"][0]["target"][0][key][0]["system"] = system;
+                assert!(PreparedConceptMap::prepare(&unresolved).is_err());
+            }
+        }
+    }
 
     #[test]
     fn dependencies_are_required_constraints_and_products_reverse_with_the_mapping() {
@@ -698,7 +951,7 @@ mod tests {
 
     #[test]
     fn unmapped_rules_never_override_explicit_negative_or_conditional_entries() {
-        let plan=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"negative","target":[{"code":"no","equivalence":"disjoint"}]},{"code":"conditional","target":[{"code":"yes","dependsOn":[{"property":"urn:p","value":"required"}]}]}],"unmapped":{"mode":"provided"}}]})).unwrap();
+        let plan=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"negative","target":[{"code":"no","equivalence":"disjoint"}]},{"code":"conditional","target":[{"code":"yes","equivalence":"equivalent","dependsOn":[{"property":"urn:p","value":"required"}]}]}],"unmapped":{"mode":"provided"}}]})).unwrap();
         assert!(plan
             .translate_resolved("s", None, "negative", None, false, &[])
             .unwrap()
@@ -729,7 +982,7 @@ mod tests {
 
     #[test]
     fn fixed_and_referenced_unmapped_modes_preserve_explicit_matches_and_continuations() {
-        let fixed=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"explicit","target":[{"code":"fallback"}]}],"unmapped":{"mode":"fixed","code":"fallback","display":"Fallback"}}]})).unwrap();
+        let fixed=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"explicit","target":[{"code":"fallback","equivalence":"equivalent"}]}],"unmapped":{"mode":"fixed","code":"fallback","display":"Fallback"}}]})).unwrap();
         assert_eq!(
             fixed
                 .translate_resolved("s", None, "unmapped", None, false, &[])
@@ -758,7 +1011,7 @@ mod tests {
     #[test]
     fn indexes_preserve_order_duplicates_reverse_display_and_equivalence() {
         let plan=PreparedConceptMap::prepare(&json!({"group":[{"source":"urn:s","target":"urn:t","element":[
-            {"code":"a","display":"A","target":[{"code":"b","display":"B","equivalence":"wider"},{"code":"c"},{"code":"b"}]}]}]})).unwrap();
+            {"code":"a","display":"A","target":[{"code":"b","display":"B","equivalence":"wider"},{"code":"c","equivalence":"equivalent"},{"code":"b","equivalence":"equivalent"}]}]}]})).unwrap();
         let matches = plan.translate("urn:s", "a", Some("urn:t"), false).unwrap();
         assert_eq!(
             matches.iter().map(|m| m.code).collect::<Vec<_>>(),
@@ -792,7 +1045,7 @@ mod tests {
     }
     #[test]
     fn conditional_error_scope_and_unmapped_modes_are_explicit() {
-        let plan=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"a","target":[{"code":"b","dependsOn":[]}]},{"code":"c","target":[{"code":"d"}]}]}]})).unwrap();
+        let plan=PreparedConceptMap::prepare(&json!({"group":[{"source":"s","target":"t","element":[{"code":"a","target":[{"code":"b","equivalence":"equivalent","dependsOn":[]}]},{"code":"c","target":[{"code":"d","equivalence":"equivalent"}]}]}]})).unwrap();
         assert!(plan.translate("s", "a", Some("other"), false).is_err());
         assert_eq!(plan.translate("s", "c", None, false).unwrap()[0].code, "d");
         assert!(plan.translate("t", "d", None, true).is_err());

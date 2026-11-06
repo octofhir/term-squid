@@ -1,0 +1,18 @@
+{
+  "format": "rxnorm-rrf-v1",
+  "version": "03022026",
+  "fullMonthly": false,
+  "expectedRows": 0,
+  "expectedConcepts": 0,
+  "source": {
+    "path": "RXNCONSO.RRF",
+    "sha256": "REPLACE_WITH_LOWERCASE_CONSO_SHA256"
+  },
+  "relationships": {
+    "path": "RXNREL.RRF",
+    "sha256": "REPLACE_WITH_LOWERCASE_RXNREL_SHA256",
+    "expectedRows": 0,
+    "version": "03022026",
+    "fullMonthly": false
+  }
+}

@@ -273,3 +273,144 @@ async fn supplemental_packages_publish_dependencies_atomically_despite_canonical
         .unwrap();
     admin.close().await;
 }
+
+fn safety_map() -> Value {
+    json!({"resourceType":"ConceptMap","url":"urn:z-safety:map","status":"active","group":[{"source":"urn:s","target":"urn:t","element":[{"code":"a","target":[{"code":"b","equivalence":"equivalent"}]}]}]})
+}
+#[test]
+fn malformed_mapping_modifiers_are_rejected_in_real_json_and_package_uploads() {
+    let mut cases = Vec::new();
+    let mut missing = safety_map();
+    missing["group"][0]["element"][0]["target"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("equivalence");
+    cases.push(missing);
+    for value in [
+        Value::Null,
+        json!(true),
+        json!(2),
+        json!([]),
+        json!({}),
+        json!(""),
+        json!("invalid"),
+    ] {
+        let mut map = safety_map();
+        map["group"][0]["element"][0]["target"][0]["equivalence"] = value;
+        cases.push(map);
+    }
+    for map in cases {
+        let bytes = serde_json::to_vec(&map).unwrap();
+        let mut data = entries();
+        data.push((
+            "package/ConceptMap.json",
+            bytes.clone(),
+            tar::EntryType::Regular,
+        ));
+        assert!(inspect_upload(&archive(data).0, UploadFormat::Package)
+            .unwrap_err_message()
+            .contains("equivalence"));
+        let fixture = archive(entries());
+        std::fs::write(&fixture.0, bytes).unwrap();
+        assert!(inspect_upload(&fixture.0, UploadFormat::Json)
+            .unwrap_err_message()
+            .contains("equivalence"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TERM_SQUID_TEST_DATABASE_URL pointing to a local disposable database"]
+async fn changed_mapping_payload_is_revalidated_before_write_and_late_package_failure_rolls_back() {
+    let url = std::env::var("TERM_SQUID_TEST_DATABASE_URL").unwrap();
+    let admin = sqlx::PgPool::connect(&url).await.unwrap();
+    let schema = format!("test_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let search = format!("SET search_path TO {schema}, public");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .after_connect(move |c, _| {
+            let search = search.clone();
+            Box::pin(async move {
+                sqlx::query(sqlx::AssertSqlSafe(search)).execute(c).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::migrate!("../backend/migrations")
+        .run(&pool)
+        .await
+        .unwrap();
+    let initial: i64 =
+        sqlx::query_scalar("SELECT generation FROM terminology_generation WHERE singleton")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut map = safety_map();
+    let inspection = inspect(&map).unwrap();
+    map["group"][0]["element"][0]["target"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("equivalence");
+    let mut tx = pool.begin().await.unwrap();
+    assert!(import_resource(&mut tx, &map, &inspection)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("equivalence"));
+    // No SQL write was made, so committing this rejected call cannot publish an invalid map.
+    tx.commit().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM concept_maps")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM terminology_generation WHERE singleton"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        initial
+    );
+    let mut data = entries();
+    data.push((
+        "package/ConceptMap.json",
+        serde_json::to_vec(&safety_map()).unwrap(),
+        tar::EntryType::Regular,
+    ));
+    let mut inspected = inspect_upload(&archive(data).0, UploadFormat::Package).unwrap();
+    let (map, _) = inspected
+        .resources
+        .iter_mut()
+        .find(|(resource, _)| resource["resourceType"] == "ConceptMap")
+        .unwrap();
+    map["group"][0]["element"][0]["target"][0]["equivalence"] = Value::Null;
+    let mut tx = pool.begin().await.unwrap();
+    let result = inspected.publish(&mut tx).await;
+    assert!(result.unwrap_err().to_string().contains("equivalence"));
+    tx.rollback().await.unwrap();
+    let inventory:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM code_systems)+(SELECT count(*) FROM concepts)+(SELECT count(*) FROM concept_maps)").fetch_one(&pool).await.unwrap();
+    assert_eq!(inventory, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM terminology_generation WHERE singleton"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        initial
+    );
+    pool.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}

@@ -9,6 +9,8 @@ Neither suite replaces the HL7 Terminology Ecosystem conformance tests. A passin
 
 The primary performance KPI is first place by the unchanged upstream composite, including direct local Termbox/FHIRsmith comparisons. See [the Round 0 baseline](../docs/HEALTHSAMURAI_BASELINE.md) for verified published scores, current 2/20 preflight coverage, missing clinical ingestion and comparison limits. Synthetic peaks are not clinical composite scores.
 
+The [November 6 R4/read-cost checkpoint](../docs/SPEC_SPEED_REPORT.md) uses source-frozen optimized API binaries and the pinned local FHIRsmith on the same Apple M3 Pro host. Its 66 official windows pass 19,713,673 response checks. The four unchanged finite scenarios, separate encoding-aware allocation profiles and folded/reverse-order controls are not the clinical composite; baseline and single-client regressions remain visible. The runner fingerprint covers four generated resources, while the actual matched package also retains a prior generated folded hierarchy file; the report records the complete six-file manifest instead of treating that fingerprint as the entire corpus.
+
 ## Prerequisites
 
 - Current stable Rust and Cargo; Node 24.16.0 / pnpm 10.11.0 for the embedded application build; Bun, [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), `just`, Git, and `tar`.

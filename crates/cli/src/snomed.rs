@@ -1,5 +1,6 @@
 //! Atomic native RF2 Snapshot loading, separate from finite FHIR JSON imports.
 mod reader;
+mod simple_refsets;
 #[cfg(test)]
 mod tests;
 
@@ -39,8 +40,10 @@ pub struct Manifest {
     pub dialect: String,
     pub language: String,
     pub sources: Sources,
+    #[serde(default)]
+    simple_refsets: Option<simple_refsets::Source>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceStats {
     pub sha256: String,
@@ -79,6 +82,9 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
     reader::sctid(&manifest.dialect)?;
     reader::language(&manifest.language)?;
     let release = reader::date(&manifest.release)?;
+    if let Some(source) = &manifest.simple_refsets {
+        source.validate(&manifest.release)?;
+    }
     let version = format!(
         "http://snomed.info/sct/{}/version/{}",
         manifest.edition_module, manifest.release
@@ -114,7 +120,11 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         );
         identities.insert(kind.name(), source.sha256.as_str());
     }
-    let identity = serde_json::json!({"format":manifest.format,"editionModule":manifest.edition_module,"release":manifest.release,"dialect":manifest.dialect,"language":manifest.language,"sources":identities});
+    let mut identity = serde_json::json!({"format":manifest.format,"editionModule":manifest.edition_module,"release":manifest.release,"dialect":manifest.dialect,"language":manifest.language,"sources":identities});
+    if let Some(source) = &manifest.simple_refsets {
+        identity["simpleRefsetProjection"] = "concept-simple-v1".into();
+        identity["simpleRefsets"] = source.identity();
+    }
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&identity)?));
     let mut tx = pool.begin().await?;
     sqlx::query("SET LOCAL statement_timeout='15min'")
@@ -137,6 +147,13 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
     }
     validate_staging(&mut tx, &manifest).await?;
     validate_hierarchy(&mut tx).await?;
+    let simple_refsets = if let Some(source) = &manifest.simple_refsets {
+        let prepared = source.stage(&mut tx, path, release).await?;
+        sources.insert("simpleRefsets", prepared.stats.clone());
+        Some(prepared)
+    } else {
+        None
+    };
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('term-squid/rf2:'||current_schema()||':'||$1,0))")
         .bind(&version)
         .execute(&mut *tx)
@@ -181,9 +198,15 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         .bind(id).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO snomed_language_members(code_system_id,id,effective_time,active,module_id,refset_id,description_id,acceptability_id) SELECT $1,id::uuid,to_date(effective_time,'YYYYMMDD'),active='1',module_id,refset_id,description_id,acceptability_id FROM rf2_language")
         .bind(id).execute(&mut *tx).await?;
-    let provenance = serde_json::json!({"identity":identity,"sources":sources,"completeSnapshotAttestation":true,"scope":"Concept, Description, inferred Relationship and Language Snapshot; no Full, Delta, OWL, concrete relationships or other refsets"});
+    let mut provenance = serde_json::json!({"identity":identity,"sources":sources,"completeSnapshotAttestation":true,"scope":"Concept, Description, inferred Relationship and Language Snapshot; no Full, Delta, OWL, concrete relationships or other refsets"});
+    if simple_refsets.is_some() {
+        provenance["scope"] = "Concept, Description, inferred Relationship, Language and declared concept-only Simple Snapshots; no Full, Delta, OWL, concrete relationships or other refsets".into();
+    }
     sqlx::query("INSERT INTO snomed_releases(code_system_id,edition_module,release_date,dialect,language,fingerprint,provenance) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(id).bind(&manifest.edition_module).bind(release).bind(&manifest.dialect).bind(&manifest.language).bind(&fingerprint).bind(sqlx::types::Json(provenance)).execute(&mut *tx).await?;
+    if let Some(prepared) = simple_refsets {
+        prepared.publish(&mut tx, id).await?;
+    }
     tx.commit().await?;
     Ok(ImportResult {
         code_system_id: Some(id),

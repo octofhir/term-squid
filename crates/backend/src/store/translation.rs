@@ -353,14 +353,14 @@ pub(super) async fn run(
                                     })
                                     .collect::<Vec<_>>()
                             } else {
-                                let rows: Vec<(String,Option<String>,Option<String>)> = sqlx::query_as("SELECT c.code,c.display,s.version FROM (SELECT id,version,CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END mode FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1) s JOIN concepts c ON c.code_system_id=s.id WHERE s.mode='complete' ORDER BY c.code LIMIT 10001")
+                                let rows: Vec<(String,Option<String>,Option<String>)> = sqlx::query_as("SELECT c.code,c.display,s.version FROM (SELECT id,version,CASE WHEN native_provider='rxnorm-rrf' THEN 'not-present' WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END mode FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1) s JOIN concepts c ON c.code_system_id=s.id WHERE s.mode='complete' ORDER BY c.code LIMIT 10001")
                                     .bind(&system).bind(&version).fetch_all(&mut *tx).await?;
                                 if rows.len() > 10000 {
                                     return Err(AppError::BadRequest(
                                         "Reverse fixed mapping exceeds 10000 source codes".into(),
                                     ));
                                 }
-                                let complete: Option<String> = sqlx::query_scalar("SELECT CASE WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1").bind(&system).bind(&version).fetch_optional(&mut *tx).await?;
+                                let complete: Option<String> = sqlx::query_scalar("SELECT CASE WHEN native_provider='rxnorm-rrf' THEN 'not-present' WHEN native_provider IS NOT NULL THEN 'complete' ELSE content_mode END FROM code_systems WHERE url=$1 AND ($2::text IS NULL OR version=$2) ORDER BY updated_at DESC,id LIMIT 1").bind(&system).bind(&version).fetch_optional(&mut *tx).await?;
                                 if complete.as_deref() != Some("complete") {
                                     return Err(AppError::BadRequest("Reverse fixed mapping requires a complete known source CodeSystem".into()));
                                 }
@@ -514,6 +514,7 @@ async fn member(
             version,
             code,
         },
+        &mut scope.permit,
     )
     .await?;
     match result {

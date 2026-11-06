@@ -117,12 +117,13 @@ impl QuoteGuard {
 /// CSV may retain at most CSV_BUFFER bytes between calls. This limits new raw input
 /// per record before the CSV crate can grow a record without bound. Decoded records
 /// are checked separately; a malformed quoted field cannot consume the whole file.
-struct BudgetReader<R> {
+pub(super) struct BudgetReader<R> {
     input: R,
     sha: Sha256,
     bytes: u64,
     record_bytes: usize,
     syntax: QuoteGuard,
+    max_file: u64,
 }
 impl<R: Read> Read for BudgetReader<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
@@ -145,10 +146,10 @@ impl<R: Read> Read for BudgetReader<R> {
         }
         self.record_bytes += read;
         self.bytes += read as u64;
-        if self.bytes > MAX_FILE {
+        if self.bytes > self.max_file {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "LOINC source exceeds 2 GiB",
+                "LOINC source exceeds its byte budget",
             ));
         }
         self.sha.update(&out[..read]);
@@ -156,7 +157,7 @@ impl<R: Read> Read for BudgetReader<R> {
     }
 }
 
-fn read_record<R: Read>(
+pub(super) fn read_record<R: Read>(
     reader: &mut csv::Reader<BudgetReader<R>>,
     record: &mut StringRecord,
 ) -> Result<bool> {
@@ -233,7 +234,7 @@ fn validate_fields(fields: &serde_json::Map<String, serde_json::Value>) -> Resul
     Ok(())
 }
 
-fn append_copy_field(chunk: &mut Vec<u8>, value: &str) {
+pub(super) fn append_copy_field(chunk: &mut Vec<u8>, value: &str) {
     chunk.push(b'"');
     for byte in value.bytes() {
         if byte == b'"' {
@@ -242,6 +243,44 @@ fn append_copy_field(chunk: &mut Vec<u8>, value: &str) {
         chunk.push(byte);
     }
     chunk.push(b'"');
+}
+
+pub(super) fn open_csv(
+    path: &std::path::Path,
+    max_file: u64,
+) -> Result<csv::Reader<BudgetReader<File>>> {
+    ensure!(
+        std::fs::metadata(path)?.is_file(),
+        "LOINC source must be a regular file"
+    );
+    let input = File::open(path).context("Cannot open LOINC source")?;
+    ensure!(
+        input.metadata()?.is_file() && input.metadata()?.len() <= max_file,
+        "LOINC source must be a regular file within its byte budget"
+    );
+    Ok(ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .buffer_capacity(CSV_BUFFER)
+        .from_reader(BudgetReader {
+            input,
+            sha: Sha256::new(),
+            bytes: 0,
+            record_bytes: 0,
+            syntax: QuoteGuard::default(),
+            max_file,
+        }))
+}
+
+impl<R> BudgetReader<R> {
+    pub(super) fn stats(self, rows: u64, file: &str) -> SourceStats {
+        SourceStats {
+            sha256: hex::encode(self.sha.finalize()),
+            rows,
+            bytes: self.bytes,
+            file: file.into(),
+        }
+    }
 }
 
 fn read_source(
@@ -268,6 +307,7 @@ fn read_source(
         bytes: 0,
         record_bytes: 0,
         syntax: QuoteGuard::default(),
+        max_file: MAX_FILE,
     };
     let mut reader = ReaderBuilder::new()
         .has_headers(false)
@@ -399,6 +439,7 @@ mod tests {
             bytes: 0,
             record_bytes: 0,
             syntax: QuoteGuard::default(),
+            max_file: MAX_FILE,
         };
         let mut reader = ReaderBuilder::new()
             .has_headers(false)
@@ -420,6 +461,7 @@ mod tests {
             bytes: 0,
             record_bytes: 0,
             syntax: QuoteGuard::default(),
+            max_file: MAX_FILE,
         };
         let mut reader = ReaderBuilder::new()
             .has_headers(false)

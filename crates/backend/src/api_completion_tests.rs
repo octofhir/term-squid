@@ -296,7 +296,7 @@ async fn translate_dependencies_products_and_unmapped_rules_are_real_public_oper
                     if reverse { "urn:context" } else { "urn:result" }
                 );
                 assert_eq!(
-                    product[1]["valueCodeableConcept"]["coding"][0]["code"],
+                    product[1]["valueCoding"]["code"],
                     if reverse { "in" } else { "out" }
                 );
             }
@@ -323,7 +323,7 @@ async fn translate_discovery_scope_filtering_chains_and_fixed_reverse_share_real
     for (url, map) in [
         (
             "urn:base",
-            json!({"group":[{"source":"urn:s","target":"urn:t","element":[{"code":"a","target":[{"code":"b"}]},{"code":"negative","target":[{"code":"b","equivalence":"disjoint"}]}],"unmapped":{"mode":"fixed","code":"fixed"}}]}),
+            json!({"group":[{"source":"urn:s","target":"urn:t","element":[{"code":"a","target":[{"code":"b","equivalence":"equivalent"}]},{"code":"negative","target":[{"code":"b","equivalence":"disjoint"}]}],"unmapped":{"mode":"fixed","code":"fixed"}}]}),
         ),
         (
             "urn:chain",

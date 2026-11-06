@@ -14,6 +14,16 @@ pub struct UcumConcept {
     pub display: String,
 }
 
+/// Lossless decimal factor/offset as produced by the bundled grammar engine.
+/// A value in the source unit maps to `value * factor + offset` in `unit`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UcumCanonical {
+    pub code: String,
+    pub unit: String,
+    pub factor: String,
+    pub offset: String,
+}
+
 pub struct UcumProvider;
 
 impl UcumProvider {
@@ -97,6 +107,45 @@ impl UcumProvider {
         }
         octofhir_ucum::is_comparable(left, right).map_err(|e| Error(e.to_string()))
     }
+
+    /// Convert a finite scalar using the real grammar, including temperature and
+    /// supported non-linear units. Invalid/incompatible units are errors.
+    pub fn convert(value: f64, from: &str, to: &str) -> Result<f64> {
+        if !value.is_finite() {
+            return Err(Error("UCUM conversion requires a finite scalar".into()));
+        }
+        for code in [from, to] {
+            check_size(code)?;
+            if code.is_empty() {
+                return Err(Error("A UCUM code must not be empty".into()));
+            }
+        }
+        let converted =
+            octofhir_ucum::convert(value, from, to).map_err(|error| Error(error.to_string()))?;
+        if !converted.is_finite() {
+            return Err(Error(
+                "UCUM conversion exceeds the finite scalar range".into(),
+            ));
+        }
+        Ok(converted)
+    }
+
+    /// Return the canonical affine representation without rounding factors to f64.
+    /// Non-linear units without an affine representation fail explicitly.
+    pub fn canonical(code: &str) -> Result<UcumCanonical> {
+        check_size(code)?;
+        if code.is_empty() {
+            return Err(Error("A UCUM code must not be empty".into()));
+        }
+        let canonical =
+            octofhir_ucum::get_canonical_units(code).map_err(|error| Error(error.to_string()))?;
+        Ok(UcumCanonical {
+            code: code.into(),
+            unit: canonical.unit,
+            factor: canonical.factor.to_string(),
+            offset: canonical.offset.to_string(),
+        })
+    }
 }
 
 fn check_size(code: &str) -> Result<()> {
@@ -174,6 +223,51 @@ mod tests {
         assert!(UcumProvider::comparable("m", "not-a-unit").is_err());
         assert!(UcumProvider::comparable("", "m").is_err());
         assert!(UcumProvider::comparable(&"m".repeat(MAX_EXPRESSION_BYTES + 1), "m").is_err());
+    }
+
+    #[test]
+    fn conversions_cover_prefixed_compound_affine_and_non_linear_units() {
+        for (value, from, to, expected) in [
+            (1000.0, "mg", "g", 1.0),
+            (1.0, "mg/dL", "mg/L", 10.0),
+            (100.0, "Cel", "[degF]", 212.0),
+            (-40.0, "Cel", "[degF]", -40.0),
+            (7.0, "[pH]", "mol/L", 1e-7),
+        ] {
+            let actual = UcumProvider::convert(value, from, to).unwrap();
+            assert!((actual - expected).abs() <= expected.abs().max(1e-12) * 1e-10);
+            let round_trip = UcumProvider::convert(actual, to, from).unwrap();
+            assert!((round_trip - value).abs() <= value.abs().max(1.0) * 1e-10);
+        }
+    }
+
+    #[test]
+    fn conversions_reject_nonfinite_incompatible_invalid_and_unbounded_inputs() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(UcumProvider::convert(value, "m", "cm").is_err());
+        }
+        for (from, to) in [("m", "s"), ("", "m"), ("m", ""), ("unknown", "m")] {
+            assert!(UcumProvider::convert(1.0, from, to).is_err());
+        }
+        assert!(UcumProvider::convert(f64::MAX, "km", "m").is_err());
+        assert!(UcumProvider::convert(1.0, &"m".repeat(MAX_EXPRESSION_BYTES + 1), "m").is_err());
+    }
+
+    #[test]
+    fn canonical_representation_preserves_decimal_factors_offsets_and_errors() {
+        let kilometre = UcumProvider::canonical("km").unwrap();
+        assert_eq!(kilometre.code, "km");
+        assert_eq!(kilometre.unit, "m");
+        assert_eq!(kilometre.factor.parse::<f64>().unwrap(), 1000.0);
+        assert_eq!(kilometre.offset.parse::<f64>().unwrap(), 0.0);
+        let celsius = UcumProvider::canonical("Cel").unwrap();
+        assert_eq!(celsius.unit, "K");
+        assert_eq!(celsius.factor.parse::<f64>().unwrap(), 1.0);
+        assert_eq!(celsius.offset.parse::<f64>().unwrap(), 273.15);
+        for code in ["", "unknown", "[pH]"] {
+            assert!(UcumProvider::canonical(code).is_err(), "{code}");
+        }
+        assert!(UcumProvider::canonical(&"m".repeat(MAX_EXPRESSION_BYTES + 1)).is_err());
     }
 }
 

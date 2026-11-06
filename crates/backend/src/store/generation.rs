@@ -42,6 +42,9 @@ struct Pending {
 struct State {
     running: bool,
     pending: VecDeque<Pending>,
+    spare: VecDeque<Pending>,
+    #[cfg(test)]
+    buffer_growths: usize,
 }
 struct Inner {
     pool: PgPool,
@@ -107,11 +110,17 @@ impl GenerationReads {
             if state.pending.len() == MAX_PENDING {
                 return Err(AppError::Overloaded);
             }
+            #[cfg(test)]
+            let capacity = state.pending.capacity();
             state.pending.push_back(Pending {
                 family,
                 keys,
                 reply,
             });
+            #[cfg(test)]
+            if state.pending.capacity() != capacity {
+                state.buffer_growths += 1;
+            }
             let start = !state.running;
             state.running = true;
             start
@@ -156,6 +165,15 @@ impl GenerationReads {
                 .count(),
         )
     }
+    #[cfg(test)]
+    pub(super) fn buffer_usage(&self) -> (usize, usize, usize) {
+        let state = self.0.state.lock().unwrap();
+        (
+            state.pending.capacity(),
+            state.spare.capacity(),
+            state.buffer_growths,
+        )
+    }
 }
 
 struct Runner {
@@ -181,7 +199,7 @@ impl Runner {
             // Collect requests while checkout waits. No request can join the detached batch
             // after this point, even while its SQL result is still in flight.
             let connection = self.inner.pool.acquire().await;
-            let pending = {
+            let mut pending = {
                 let mut state = self.inner.state.lock().expect("generation queue poisoned");
                 state.pending.retain(|pending| !pending.reply.is_closed());
                 if state.pending.is_empty() {
@@ -189,7 +207,11 @@ impl Runner {
                     self.active = false;
                     return;
                 }
-                std::mem::take(&mut state.pending)
+                // Two bounded buffers alternate between pending admission and
+                // detached SQL ownership. The spare has no live recipients.
+                let mut detached = std::mem::take(&mut state.spare);
+                std::mem::swap(&mut detached, &mut state.pending);
+                detached
             };
             let keys: Vec<&str> = pending
                 .iter()
@@ -220,13 +242,13 @@ impl Runner {
             let _delivery = self.inner.delivery.lock().await;
             match result {
                 Err(error) => {
-                    for request in pending {
+                    while let Some(request) = pending.pop_front() {
                         let _ = request.reply.send(Err(error.clone()));
                     }
                 }
                 Ok(batch) => {
                     let mut keys = batch.keys.into_iter();
-                    for request in pending {
+                    while let Some(request) = pending.pop_front() {
                         let (key_a, key_b) = if request.keys.is_some() {
                             (keys.next().unwrap(), keys.next().unwrap())
                         } else {
@@ -250,6 +272,12 @@ impl Runner {
                     }
                 }
             }
+            // Preserve capacity only, not observations, senders or comparison keys.
+            self.inner
+                .state
+                .lock()
+                .expect("generation queue poisoned")
+                .spare = pending;
         }
     }
 }

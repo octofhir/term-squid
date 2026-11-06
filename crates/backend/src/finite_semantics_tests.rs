@@ -943,6 +943,11 @@ async fn display_fallback_resolves_original_selectors_on_one_complete_post_activ
                 .await
                 .unwrap()
                 .id;
+            // Selection is ordered by activation metadata, not publication order.
+            // Control that metadata: default NOW() values can move backwards on
+            // the local database clock and otherwise turn this into an ordering test.
+            sqlx::query("UPDATE code_systems SET updated_at=TIMESTAMPTZ '2026-01-01T00:00:00Z'+INTERVAL '1 second' WHERE id=$1")
+                .bind(id).execute(&mut *tx).await.unwrap();
             let definition = json!({"resourceType":"ValueSet","url":set,"version":"1","status":"active","compose":{"include":[{"system":system}]}});
             let inspection = term_squid_ingestion::inspect(&definition).unwrap();
             term_squid_ingestion::import_resource(&mut tx, &definition, &inspection)
@@ -1016,10 +1021,17 @@ async fn display_fallback_resolves_original_selectors_on_one_complete_post_activ
                 };
                 let inspection = term_squid_ingestion::inspect(&source).unwrap();
                 let mut tx = pool.begin().await.unwrap();
-                term_squid_ingestion::import_resource(&mut tx, &source, &inspection)
-                    .await
-                    .unwrap();
+                let activated =
+                    term_squid_ingestion::import_resource(&mut tx, &source, &inspection)
+                        .await
+                        .unwrap()
+                        .id;
+                sqlx::query("UPDATE code_systems SET updated_at=TIMESTAMPTZ '2026-01-01T00:00:00Z'+$2::integer*INTERVAL '1 second' WHERE id=$1")
+                    .bind(activated).bind(phase).execute(&mut *tx).await.unwrap();
                 tx.commit().await.unwrap();
+                let latest: String = sqlx::query_scalar("SELECT version FROM code_systems WHERE url=$1 ORDER BY updated_at DESC,id LIMIT 1")
+                    .bind(&system).fetch_one(&pool).await.unwrap();
+                assert_eq!(latest, phase.to_string(), "The post-activation selector must identify the intended fixture edition before resuming its probe");
                 resume.notify_one();
                 let (status, body) =
                     tokio::time::timeout(std::time::Duration::from_secs(10), pending)

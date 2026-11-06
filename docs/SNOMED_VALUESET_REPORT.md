@@ -1,5 +1,11 @@
 # Native SNOMED ValueSet provider
 
+This is the historical November 3 checkpoint. The later [native search increment](NATIVE_SEARCH_REPORT.md) implements its selected-dialect synonym text-search gap without changing RF2 projections. [Bounded mixed-provider composition](MIXED_VALUESET_REPORT.md) subsequently adds finite stored/temporary and explicit UCUM leaves. Other provider, corpus and historical performance limits below remain.
+
+The later [ECL increment](ECL_RXNORM_RELATIONS_REPORT.md) adds bounded active-concept constraint/implicit queries, eight hierarchy operators and Boolean grouping. It supersedes the blanket ECL limitation below, not the remaining refset/refinement/history or clinical-performance limits.
+
+The following [concept-refset increment](LOINC_PARTS_SNOMED_REFSETS_REPORT.md) adds explicitly declared complete Simple concept sets via `concept in`, implicit refset URLs and scalar ECL `^`. Global refset coverage, nonconcept/association semantics, refinements and history remain unsupported.
+
 November 3, 2026. Based on `a016524`, with uncommitted implementation changes. This increment adds native RF2 ValueSet execution; it does not establish clinical composite leadership. The committed baseline rejected native compose dependencies, so there is no valid native throughput ratio against that unsupported implementation.
 
 ## Supported execution

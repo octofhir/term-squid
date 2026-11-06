@@ -1,4 +1,5 @@
 //! Atomic loading of the attested LOINC main table; accessory files remain separate.
+mod primary_links;
 mod reader;
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,7 @@ pub struct Manifest {
     pub complete_table: bool,
     pub expected_concepts: u64,
     pub source: Source,
+    primary_links: Option<primary_links::Source>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +51,8 @@ pub struct ImportResult {
     pub dry_run: bool,
     pub unchanged: bool,
     pub source: SourceStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_link_source: Option<Value>,
 }
 
 fn validate_version(version: &str) -> Result<()> {
@@ -100,10 +104,17 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         manifest.source.path.file_name().and_then(|n| n.to_str()) == Some("Loinc.csv"),
         "Only the official main-table filename Loinc.csv is supported"
     );
-    let identity = json!({
+    if let Some(source) = &manifest.primary_links {
+        primary_links::validate(source, &manifest.version)?;
+    }
+    let mut identity = json!({
         "format":manifest.format,"projection":"primary-table-v1","version":manifest.version,
         "sourceSha256":manifest.source.sha256,"expectedConcepts":manifest.expected_concepts
     });
+    if let Some(source) = &manifest.primary_links {
+        identity["primaryLinksProjection"] = "primary-parts-v1".into();
+        identity["primaryLinks"] = primary_links::identity(source);
+    }
     let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&identity)?));
     let source_path = if manifest.source.path.is_absolute() {
         manifest.source.path.clone()
@@ -124,6 +135,12 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         source.rows == manifest.expected_concepts,
         "LOINC row count does not match the attested expectedConcepts"
     );
+    let links = primary_links::stage(
+        &mut tx,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        manifest.primary_links.as_ref(),
+    )
+    .await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('term-squid/loinc:'||current_schema()||':'||$1,0))")
         .bind(&manifest.version).execute(&mut *tx).await?;
     let existing: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
@@ -143,6 +160,7 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
             dry_run,
             unchanged: true,
             source,
+            primary_link_source: links.result_source(),
         });
     }
     if dry_run {
@@ -154,10 +172,19 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
             dry_run,
             unchanged: false,
             source,
+            primary_link_source: links.result_source(),
         });
     }
     let id = Uuid::new_v4();
-    let metadata = metadata(id, &manifest.version);
+    let mut metadata = metadata(id, &manifest.version);
+    if links.loaded {
+        metadata["description"] = "Native primary-table projection with complete coded primary Part links; accessory concepts and hierarchy are not loaded.".into();
+        let properties = metadata["property"].as_array_mut().unwrap();
+        for axis in term_squid_core::loinc::PrimaryAxis::all() {
+            properties.push(json!({"code":axis.code(),"uri":axis.uri(),"type":"code",
+                "description":"Authoritative primary LP Part identifier from the same complete LOINC edition"}));
+        }
+    }
     sqlx::query("INSERT INTO code_systems(id,url,version,status,name,content,native_provider,fhir_version,updated_at) VALUES($1,'http://loinc.org',$2,'active','LOINC',$3,'loinc-csv','R4',clock_timestamp())")
         .bind(id).bind(&manifest.version).bind(sqlx::types::Json(metadata)).execute(&mut *tx).await?;
     // The source is retained in PostgreSQL, never in a release-sized Rust map/resource.
@@ -165,13 +192,22 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         .bind(id).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO concepts(code_system_id,code,display,definition,properties) SELECT $1,code,COALESCE(NULLIF(fields->>'LONG_COMMON_NAME',''),NULLIF(fields->>'SHORTNAME','')),NULLIF(fields->>'DefinitionDescription',''), jsonb_build_array(jsonb_build_object('code','source-table','valueString','Loinc.csv'),jsonb_build_object('code','inactive','valueBoolean',fields->>'STATUS'='DEPRECATED')) || COALESCE((SELECT jsonb_agg(jsonb_build_object('code','raw-'||key,'valueString',value)) FROM jsonb_each_text(fields) WHERE key=ANY(ARRAY['COMPONENT','PROPERTY','TIME_ASPCT','SYSTEM','SCALE_TYP','METHOD_TYP','EXTERNAL_COPYRIGHT_NOTICE']) AND value<>''),'[]'::jsonb) || COALESCE((SELECT jsonb_agg(jsonb_build_object('code',key,'valueString',value)) FROM jsonb_each_text(fields) WHERE key=ANY(ARRAY['STATUS','CLASS','CLASSTYPE','ORDER_OBS','CONSUMER_NAME']) AND value<>''),'[]'::jsonb) FROM loinc_input")
         .bind(id).execute(&mut *tx).await?;
-    let provenance = json!({
+    links.publish(&mut tx, id).await?;
+    let mut provenance = json!({
         "identity":identity,"source":source,"completeMainTableAttestation":true,
         "scope":"Numeric primary Loinc.csv terms only; no Parts, Answers, Answer Lists, hierarchy, Groups, maps or translations",
         "columns":"All source columns preserved verbatim in loinc_terms.fields; raw axis labels are not Part identifiers"
     });
-    sqlx::query("INSERT INTO loinc_releases(code_system_id,version,fingerprint,provenance) VALUES($1,$2,$3,$4)")
-        .bind(id).bind(&manifest.version).bind(&fingerprint).bind(sqlx::types::Json(provenance)).execute(&mut *tx).await?;
+    if links.loaded {
+        provenance["primaryLinkSource"] = links.source.clone();
+        provenance["scope"] = "Numeric primary Loinc.csv terms and six coded Primary Part properties only; all primary-link rows retained raw, with no standalone Parts, Answers, Answer Lists, hierarchy, Groups, maps or translations".into();
+        provenance["columns"] = "All main-table and primary-link source columns preserved verbatim; raw axis labels remain distinct from authoritative coded primary Part properties".into();
+        sqlx::query("INSERT INTO loinc_releases(code_system_id,version,fingerprint,provenance,primary_links_loaded,primary_link_source) VALUES($1,$2,$3,$4,true,$5)")
+            .bind(id).bind(&manifest.version).bind(&fingerprint).bind(sqlx::types::Json(provenance)).bind(sqlx::types::Json(&links.source)).execute(&mut *tx).await?;
+    } else {
+        sqlx::query("INSERT INTO loinc_releases(code_system_id,version,fingerprint,provenance) VALUES($1,$2,$3,$4)")
+            .bind(id).bind(&manifest.version).bind(&fingerprint).bind(sqlx::types::Json(provenance)).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(ImportResult {
         code_system_id: Some(id),
@@ -180,6 +216,7 @@ pub async fn import_manifest(pool: &PgPool, path: &Path, dry_run: bool) -> Resul
         dry_run,
         unchanged: false,
         source,
+        primary_link_source: links.result_source(),
     })
 }
 

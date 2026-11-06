@@ -171,7 +171,7 @@ impl ConceptPlans {
             tx.commit().await?;
             return Ok(plan.resolve(code, &observed));
         }
-        let metadata = sqlx::query_as::<_,Metadata>("SELECT id,url,name,version,native_provider,CASE WHEN native_provider IS NOT NULL THEN 'complete' WHEN octet_length(content_mode)<=65536 THEN content_mode END AS content_mode,case_sensitive,(octet_length(url)+COALESCE(octet_length(name),0)+COALESCE(octet_length(version),0)+COALESCE(octet_length(content_mode),0)+COALESCE(octet_length(native_provider),0))::bigint AS bytes FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
+        let metadata = sqlx::query_as::<_,Metadata>("SELECT id,url,name,version,native_provider,CASE WHEN native_provider='rxnorm-rrf' THEN 'not-present' WHEN native_provider IS NOT NULL THEN 'complete' WHEN octet_length(content_mode)<=65536 THEN content_mode END AS content_mode,case_sensitive,(octet_length(url)+COALESCE(octet_length(name),0)+COALESCE(octet_length(version),0)+COALESCE(octet_length(content_mode),0)+COALESCE(octet_length(native_provider),0))::bigint AS bytes FROM code_systems WHERE ($3::uuid IS NOT NULL AND id=$3) OR ($3::uuid IS NULL AND url=$1 AND ($2::text IS NULL OR version=$2)) ORDER BY updated_at DESC,id LIMIT 1")
             .bind(&root.url).bind(&root.version).bind(id).fetch_optional(&mut *tx).await?;
         let Some(metadata) = metadata else {
             tx.commit().await?;

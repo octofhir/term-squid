@@ -7,8 +7,102 @@ fn main() {
     assert!(UcumProvider::comparable("mg/dL", "g/L").unwrap());
     assert!(!UcumProvider::comparable("m", "s").unwrap());
     assert!(UcumProvider::lookup("m", Some("missing")).is_err());
+    assert_eq!(UcumProvider::convert(1000.0, "mg", "g").unwrap(), 1.0);
+    assert_eq!(UcumProvider::canonical("km").unwrap().unit, "m");
+    assert!(UcumProvider::convert(f64::NAN, "m", "cm").is_err());
     finite_r4_filters();
     finite_ucum();
+    rxnorm_filters();
+    snomed_ecl();
+    loinc_parts_and_snomed_refsets();
+}
+
+fn loinc_parts_and_snomed_refsets() {
+    use term_squid_core::{
+        loinc::{PrimaryAxis, PrimaryFilter},
+        snomed::{ecl::Ecl, NativeFilter},
+        Filter,
+    };
+    let axis = PrimaryAxis::Time;
+    assert_eq!(axis.part_type(), "TIME");
+    assert_eq!(axis.code(), "TIME_ASPCT");
+    assert_eq!(axis.uri(), "http://loinc.org/property/TIME_ASPCT");
+    let parts = PrimaryFilter::parse(&Filter {
+        property: "COMPONENT".into(),
+        op: "in".into(),
+        value: "lp100-1,LP200-2".into(),
+    })
+    .unwrap();
+    assert!(matches!(
+        parts,
+        PrimaryFilter::Parts {
+            axis: PrimaryAxis::Component,
+            ..
+        }
+    ));
+    assert!(!parts.scopes_primary_table());
+    let refset = NativeFilter::parse(&Filter {
+        property: "concept".into(),
+        op: "in".into(),
+        value: "700001".into(),
+    })
+    .unwrap();
+    assert_eq!(refset, NativeFilter::Refset("700001".into()));
+    let ecl = Ecl::parse("^700001 AND <<100001").unwrap();
+    assert_eq!(ecl.refsets(), std::collections::BTreeSet::from(["700001"]));
+    assert_eq!(ecl.hierarchies().len(), 1);
+}
+
+fn rxnorm_filters() {
+    use term_squid_core::{
+        rxnorm::{Filter as RxNormFilter, SemanticTypeField},
+        Filter,
+    };
+    let filter = |property: &str, op: &str, value: &str| Filter {
+        property: property.into(),
+        op: op.into(),
+        value: value.into(),
+    };
+    assert_eq!(
+        RxNormFilter::parse(&filter("STY", "in", "TUI:T109,T121")).unwrap(),
+        RxNormFilter::SemanticTypes {
+            field: SemanticTypeField::Tui,
+            values: vec!["T109".into(), "T121".into()],
+        }
+    );
+    assert_eq!(
+        RxNormFilter::parse(&filter("NDC", "=", "00012345678")).unwrap(),
+        RxNormFilter::NormalizedNdc(vec!["00012345678".into()])
+    );
+    assert!(RxNormFilter::parse(&filter("NDC", "=", "1234567890")).is_err());
+    assert!(RxNormFilter::parse(&filter("STY", "in", "TUI:T109,STN:A1")).is_err());
+    let relation = RxNormFilter::parse(&filter("has_ingredient", "in", "CUI:111,222")).unwrap();
+    assert!(matches!(
+        relation,
+        RxNormFilter::Relationship {
+            target: term_squid_core::rxnorm::RelationshipTarget::Cui,
+            ..
+        }
+    ));
+    assert!(!relation.scopes_active());
+}
+
+fn snomed_ecl() {
+    use term_squid_core::snomed::{ecl::Ecl, NativeFilter};
+    let ecl = Ecl::parse("(<< 100001 MINUS << 100002) OR <! 100003").unwrap();
+    assert_eq!(ecl.anchors().len(), 3);
+    assert_eq!(ecl.hierarchies().len(), 3);
+    assert!(Ecl::parse("100001 OR 100002 AND 100003").is_err());
+    assert!(Ecl::parse("<< 100001 : 100002 = 100003").is_err());
+    let filter = term_squid_core::Filter {
+        property: "constraint".into(),
+        op: "=".into(),
+        value: ecl.source().into(),
+    };
+    assert!(matches!(
+        NativeFilter::parse(&filter).unwrap(),
+        NativeFilter::Constraint(_)
+    ));
 }
 
 fn finite_r4_filters() {

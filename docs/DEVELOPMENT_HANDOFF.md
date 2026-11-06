@@ -1,6 +1,48 @@
 # Development Handoff
 
-Updated November 5, 2026. This file is intended for an agent starting from a clean checkout on another computer.
+Updated November 6, 2026. This file is intended for an agent starting from a clean checkout on another computer.
+
+## Latest R4 correctness and measured read cost
+
+[SPEC_SPEED_REPORT.md](SPEC_SPEED_REPORT.md) fixes malformed ConceptMap equivalence, group-relative dependency/product systems and versioned R4 product `Coding`, including CLI/package rollback and stored cache-on/off safety. Do not restore the old positive default. Exact hierarchy Weak hints must be confirmed by a fresh generation; folded/stale/missing paths retain keyed SQL. The queue keeps two bounded buffers, not stale observations. HTTP compression skips known bodies below 1 KiB unless identity is forbidden; preserve MIME/stream/HEAD/Vary/406 rules and decoded bytes.
+
+The workspace passes **414 tests, zero ignored** (254 backend, 60 CLI, 86 core, 14 ingestion), independent core, Clippy/formatting, 38 harness and four adapter tests. The 66 official windows pass 19,713,673 response checks. At 50 VU the four finite cases outperform pinned FHIRsmith, but single-client/reference losses and 11/12 primary baseline throughput losses remain; this is not a speed-win checkpoint. The report keeps all measurements, allocation/header evidence and limits. No new migration, dependency/lock change, clinical archive or full conformance/composite claim. Optimized API builds reuse tracked embedded assets: no fresh frontend/browser delivery. Unicode SQL/Rust comparison and absent caseSensitivity remain architecture work. The accumulated delivery is collected in one user-requested commit; pushing and deployment remain separate.
+
+## Latest LOINC primary Parts and SNOMED concept refsets
+
+[LOINC_PARTS_SNOMED_REFSETS_REPORT.md](LOINC_PARTS_SNOMED_REFSETS_REPORT.md) adds optional complete primary-link cohorts and six coded LOINC axes, with raw labels preserved, bounded filters and source-aware lookup. SNOMED optional concept-only Simple Snapshots declare complete individual refsets, including empty sets; standard `concept in`, implicit refset URLs and scalar ECL `^` preserve the distinction between active members and active concepts. Missing/undeclared knowledge fails before every result. Finite SNOMED editions cannot mistake a refset selector for a literal code list. All prior snapshot/work limits and ordinary finite code filters remain.
+
+Apply **`20261106000003_loinc_primary_links`** and **`20261106000004_snomed_simple_refsets`**, plus earlier migrations. Source cohorts must be chosen at first publication; old fingerprints/provenance remain byte-identical. Readiness checks nineteen triggers and bounded declared-registry consistency; safe downgrade cannot drop loaded/unclaimed source rows. Validation passes **379 tests, zero ignored** (228 backend, 59 CLI, 81 core, 11 ingestion), workspace check/Clippy/format, independent core/dependency guard, 38 harness and four adapter tests. Generated-file CLI/HTTP smoke passes **39 checks**, retains both raw source models and removes its own database/process. No clinical archive, new production/browser/performance result, commit/push or deployment is supplied. See the report and [tracker](../vibe/loinc-parts-snomed-refsets-plan-track.md).
+
+## Latest SNOMED ECL and RxNorm relationships
+
+[ECL_RXNORM_RELATIONS_REPORT.md](ECL_RXNORM_RELATIONS_REPORT.md) adds a typed dependency-free ECL parser and active-substrate RF2 queries through constraint filters/implicit URLs: eight hierarchy operators, scalar/wildcard focus, annotations, Boolean sets and grouping. Preserve active intermediate concepts, disambiguation and aggregate AST/walk guards; full ECL/refsets/refinements/history remain unsupported. Optional RXNREL joins the first immutable monthly cohort and enables standard direct REL/RELA filters with validated CUI/AUI anchors and official endpoint direction. Source-only anchors are allowed; noncurrent candidate knowledge stays unavailable. No inverse/transitive inference, subsumption or maps are added.
+
+Apply **`20261106000002_rxnorm_relationships`** and all earlier migrations before the backend/CLI. Readiness now checks sixteen tracking triggers and relationship provenance. Old no-REL fingerprints remain unchanged, and safe downgrade cannot discard declared/raw relationships. The workspace passes **322 tests, zero ignored** (194 backend, 41 CLI, 76 core, 11 ingestion), Clippy/formatting, independent core/dependency guard, 38 harness and four adapter tests. Actual generated RF2/RxNorm CLI imports plus HTTP smoke pass **56 checks**. No clinical archive, new production/browser/performance result, commit/push or deployment is supplied. See the report and [tracker](../vibe/ecl-rxnorm-relations-plan-track.md); prior checkpoints below remain historical.
+
+## Latest RxNorm auxiliary sources
+
+[RXNORM_AUXILIARY_REPORT.md](RXNORM_AUXILIARY_REPORT.md) adds optional full-monthly RXNSTY/RXNSAT import, typed semantic properties, qualified STY filters and conservative curated normalized NDC strings. Apply **`20261106000001_rxnorm_auxiliary`** and all earlier migrations. Source cohorts are immutable from first publication; CONSO-only metadata/fingerprints remain unchanged. Missing auxiliary knowledge is an explicit error, distinct from a loaded source with no supported value. Preserve current-active scope, historical uncertainty, exact set identity and one-operation snapshots. Readiness includes source descriptors and fifteen tracking triggers; safe downgrade cannot discard auxiliary content.
+
+The reviewed workspace passes **281 tests, zero ignored** (167 backend, 33 CLI, 70 core, 11 ingestion), Clippy/formatting, extended independent core/dependency guard, 38 harness and four adapter tests. A real generated-data CLI-to-HTTP smoke passes **26 HTTP checks**, including atomic cohort publication, old-edition errors and unchanged historical uncertainty. No clinical archive, current production/browser/performance result, commit/push or deployment is supplied. See the report and [tracker](../vibe/rxnorm-auxiliary-plan-track.md); earlier checkpoints below remain historical.
+
+## Latest RxNorm, readiness and UCUM tools
+
+[RXNORM_READINESS_REPORT.md](RXNORM_READINESS_REPORT.md) adds checksummed full-monthly RRF import and a partial known-active native provider, plus fresh bounded `/ready` and database-free UCUM conversion/canonical tools. Apply **`20261106000000_rxnorm_rrf`** before the new backend. Preserve explicit historical uncertainty, actual normalized names/aliases, atom-backed filters, active-scoped enumeration, read-only readiness and the unchanged six-operation R4 boundary.
+
+The reviewed workspace passes **261 tests, zero ignored** (155 backend, 26 CLI, 69 core, 11 ingestion), Clippy/formatting, extended independent core/dependency guard, 38 harness and four adapter tests. A real generated-data CLI-import/HTTP debug smoke passes; no clinical archive, current production/browser build, ecosystem/composite rerun or deployment is supplied. Prior uncommitted increments remain. See the report and [tracker](../vibe/rxnorm-readiness-plan-track.md) for commands, limits and final evidence.
+
+## Latest mixed-provider increment
+
+[MIXED_VALUESET_REPORT.md](MIXED_VALUESET_REPORT.md) adds a bounded finite-leaf relation bridge to native ValueSet composition, including complete stored/temporary finite CodeSystems and explicit UCUM lists. Actual canonical editions, exact source-code set identities, import intersections, exclusion scope, rich page labels/parents and source knowledge remain. All reads use one repeatable-read snapshot; blocking preparation owns the existing native CPU permit even after request cancellation. No migration, core API or dependency change is added.
+
+Current validation: **229 Rust/PostgreSQL tests, zero ignored**, including fifteen new mixed scenarios; workspace Clippy/formatting, independent core/dependency guard, 38 harness tests, four adapter tests and unchanged 7/7 local API gates in both retention modes pass. No current production/browser build, ecosystem/composite rerun or clinical archive is supplied. Prior uncommitted native-search work is preserved. See the report and [tracker](../vibe/mixed-valueset-plan-track.md) for bounds/evidence and remaining clinical/Unicode/provider work.
+
+## Latest native search increment
+
+[NATIVE_SEARCH_REPORT.md](NATIVE_SEARCH_REPORT.md) adds selected-dialect RF2 synonym matching to native expansion. Only active preferred/acceptable synonyms in the selected release language/dialect qualify; code and resolved-display search remain. Matching synonyms do not replace display or multiply total/page rows. Composition, versions, snapshots and existing admission/work limits remain. No migration, new dependency or projection revision is added. Native text comparisons use PostgreSQL `lower` on both operands; code identity and the known SQL/Rust Unicode boundary are unchanged.
+
+Current validation: **214 Rust/PostgreSQL tests, zero ignored**, including eight new native-search scenarios; workspace Clippy/formatting, locked independent core/dependency guard, 38 harness tests and four ecosystem-adapter tests pass. See the report and [tracker](../vibe/native-search-plan-track.md). The seven unchanged local gates pass in both retention modes on a temporary debug backend with unchanged public inventory totals. This increment does not rerun the earlier embedded-production/browser, official ecosystem or comparative-performance checkpoints below, and supplies no clinical archive or composite score. No commit/push/deployment is authorized or performed.
 
 ## Latest request-context and finite-semantics checkpoint
 

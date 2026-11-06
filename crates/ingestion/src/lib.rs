@@ -162,9 +162,12 @@ fn inspect_with_limit(content: &Value, concept_limit: usize, r4_only: bool) -> R
                 records <= MAX_CONCEPTS,
                 "ConceptMap definition entry limit exceeded"
             );
-            term_squid_core::PreparedConceptMap::prepare(content)?;
             record_kind = "definition entries";
         }
+    }
+    if kind == "ConceptMap" {
+        // CLI and protected uploads share the same R4 modifier safety boundary.
+        term_squid_core::PreparedConceptMap::prepare(content)?;
     }
     Ok(Inspection {
         resource_type: kind.into(),
@@ -208,6 +211,10 @@ pub async fn import_resource(
     content: &Value,
     meta: &Inspection,
 ) -> Result<ImportResult> {
+    if meta.resource_type == "ConceptMap" {
+        // Do not trust a retained Inspection after its JSON payload was changed.
+        term_squid_core::PreparedConceptMap::prepare(content)?;
+    }
     let table = match meta.resource_type.as_str() {
         "CodeSystem" => "code_systems",
         "ValueSet" => "value_sets",
@@ -326,3 +333,58 @@ mod definition_tests {
 
 #[cfg(test)]
 mod package_tests;
+
+#[cfg(test)]
+mod translation_modifier_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn every_ingestion_mode_requires_the_explicit_r4_mapping_modifier() {
+        let map = json!({"resourceType":"ConceptMap","url":"urn:safety:map","status":"active","group":[{"source":"urn:s","target":"urn:t","element":[{"code":"a","target":[{"code":"b","equivalence":"equivalent"}]}]}]});
+        for inspect in [super::inspect, super::inspect_cli] {
+            assert!(inspect(&map).is_ok());
+            let mut missing = map.clone();
+            missing["group"][0]["element"][0]["target"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("equivalence");
+            assert!(inspect(&missing).is_err());
+            for value in [
+                Value::Null,
+                json!(true),
+                json!(1),
+                json!([]),
+                json!({}),
+                json!(""),
+                json!("invalid"),
+            ] {
+                let mut malformed = map.clone();
+                malformed["group"][0]["element"][0]["target"][0]["equivalence"] = value;
+                assert!(inspect(&malformed).is_err(), "{malformed}");
+            }
+            for equivalence in [
+                "relatedto",
+                "equivalent",
+                "equal",
+                "wider",
+                "subsumes",
+                "narrower",
+                "specializes",
+                "inexact",
+                "unmatched",
+                "disjoint",
+            ] {
+                let mut valid = map.clone();
+                valid["group"][0]["element"][0]["target"][0]["equivalence"] = equivalence.into();
+                if matches!(equivalence, "unmatched" | "disjoint") {
+                    valid["group"][0]["element"][0]["target"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("code");
+                }
+                assert!(inspect(&valid).is_ok(), "{valid}");
+            }
+        }
+    }
+}

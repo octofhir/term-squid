@@ -7,6 +7,7 @@ mod graph;
 mod properties;
 pub use properties::PropertyDefinitions;
 pub mod loinc;
+pub mod rxnorm;
 pub mod snomed;
 pub mod supplements;
 pub mod ucum;

@@ -112,6 +112,7 @@ impl Resources {
                 && resource["content"] != "supplement"
                 && (url == term_squid_core::ucum::SYSTEM
                     || url == term_squid_core::loinc::SYSTEM
+                    || url == term_squid_core::rxnorm::SYSTEM
                     || url == term_squid_core::snomed::SYSTEM
                     || url.starts_with("http://snomed.info/sct/"))
             {

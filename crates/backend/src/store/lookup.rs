@@ -15,6 +15,9 @@ pub struct LookupRequest<'a> {
     pub language: Option<&'a str>,
     pub relationships: bool,
     pub metadata: bool,
+    pub require_semantic_types: bool,
+    pub require_attributes: bool,
+    pub require_primary_links: bool,
 }
 pub struct LookupAnswer {
     pub concept: ResolvedConcept,
@@ -166,6 +169,33 @@ pub(super) async fn run(
     }
     if concept.native_provider.as_deref() == Some("loinc-csv") {
         term_squid_core::loinc::require_primary_code(request.code)?;
+        if request.require_primary_links {
+            let loaded: bool = sqlx::query_scalar(
+                "SELECT primary_links_loaded FROM loinc_releases WHERE code_system_id=$1",
+            )
+            .bind(selected_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !loaded {
+                return Err(super::native_valueset::unsupported("LOINC coded primary axes are unavailable for the selected release; import its LoincPartLink_Primary.csv source"));
+            }
+        }
+    }
+    if concept.native_provider.as_deref() == Some("rxnorm-rrf") {
+        term_squid_core::rxnorm::require_code(request.code)?;
+        if request.require_semantic_types || request.require_attributes {
+            let loaded: (bool, bool) = sqlx::query_as("SELECT semantic_types_loaded,attributes_loaded FROM rxnorm_releases WHERE code_system_id=$1")
+                .bind(selected_id).fetch_one(&mut *tx).await?;
+            if request.require_semantic_types && !loaded.0 {
+                return Err(super::native_valueset::unsupported("RxNorm semantic types are unavailable for the selected release; import its RXNSTY.RRF source"));
+            }
+            if request.require_attributes && !loaded.1 {
+                return Err(super::native_valueset::unsupported("RxNorm attributes are unavailable for the selected release; import its RXNSAT.RRF source"));
+            }
+        }
+        if concept.code.is_none() {
+            return Err(super::native_valueset::unsupported("RXCUI is outside the loaded active RxNorm projection; historical existence is unavailable"));
+        }
     }
     let mut designations = Vec::new();
     let mut properties = Vec::new();
@@ -193,6 +223,10 @@ pub(super) async fn run(
                     properties.push(json!({"code":kind,"valueCode":code}));
                 }
             }
+        } else if concept.native_provider.as_deref() == Some("rxnorm-rrf") {
+            let mut bytes = 32 * 1024 * 1024;
+            designations =
+                super::designations::projected(&mut tx, selected_id, code, &mut bytes).await?;
         } else if concept.native_provider.is_none() {
             let resource:Option<sqlx::types::Json<Value>>=sqlx::query_scalar("SELECT CASE WHEN octet_length(content::text)<=33554432 THEN content END FROM code_systems WHERE id=$1").bind(selected_id).fetch_one(&mut *tx).await?;
             let resource = resource
@@ -240,7 +274,12 @@ pub(super) async fn run(
         }
     }
     if let Some(language) = request.language {
-        if let Some(value) = super::expansion::preferred(&designations, language) {
+        let localized = if concept.native_provider.as_deref() == Some("rxnorm-rrf") {
+            super::designations::rxnorm_display(concept.display.as_deref(), &designations, language)
+        } else {
+            super::expansion::preferred(&designations, language)
+        };
+        if let Some(value) = localized {
             concept.display = Some(value.into());
         }
     }

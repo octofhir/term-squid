@@ -302,6 +302,8 @@ async fn import_concept_map(
     tx: &mut Transaction<'_, Postgres>,
     resource: &FhirResource,
 ) -> Result<bool> {
+    // Package publication cannot bypass the required R4 mapping modifier.
+    term_squid_core::PreparedConceptMap::prepare(&resource.content)?;
     let url = resource
         .url
         .as_ref()
@@ -351,3 +353,7 @@ async fn import_concept_map(
 
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "import_translation_tests.rs"]
+mod translation_safety_tests;

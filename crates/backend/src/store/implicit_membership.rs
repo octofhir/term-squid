@@ -32,6 +32,11 @@ pub(super) async fn find(
     system_version: Option<&str>,
     code: &str,
 ) -> Result<ValueSetResult, AppError> {
+    if definition.constraint.is_some() {
+        return Err(unsupported(
+            "ECL requires the guarded general native provider",
+        ));
+    }
     let release = definition.system_version.as_deref().or_else(|| {
         context
             .filter(|(url, _)| *url == snomed::SYSTEM)
@@ -95,5 +100,6 @@ pub(super) async fn find(
         resource: definition.resource(root),
         total: i64::from(member.is_some()),
         members: member.into_iter().collect(),
+        finite: None,
     }))
 }

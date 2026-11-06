@@ -27,6 +27,7 @@ pub(super) async fn run(
 ) -> Result<ExpansionPage, AppError> {
     options.validate()?;
     super::value_set::check_page(offset, count)?;
+    let mut permit = Some(permit);
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
@@ -57,6 +58,7 @@ pub(super) async fn run(
         let canonical = Canonical::parse(request.url, request.version)?;
         term_squid_core::snomed::implicit(&canonical)?.is_some()
             || term_squid_core::loinc::implicit(&canonical)?.is_some()
+            || term_squid_core::rxnorm::implicit(&canonical)?.is_some()
     };
     let loaded = if implicit {
         None
@@ -87,36 +89,54 @@ pub(super) async fn run(
             count,
         },
         Some(options),
+        &mut permit,
     )
     .await?;
     let ValueSetResult::Native(page) = result else {
         unreachable!("Native query returns one page")
     };
     let mut contains = Vec::new();
-    for member in page.members {
-        let mut value = serde_json::to_value(&member).map_err(|e| AppError::Internal(e.into()))?;
+    for member in &page.members {
+        let mut value = serde_json::to_value(member).map_err(|e| AppError::Internal(e.into()))?;
         if options.wants_designations() {
-            let base:uuid::Uuid=sqlx::query_scalar("SELECT id FROM code_systems WHERE url=$1 AND version IS NOT DISTINCT FROM $2 ORDER BY updated_at DESC,id LIMIT 1").bind(&member.system).bind(&member.version).fetch_one(&mut *tx).await?;
-            let mut designations: Vec<_> =
-                super::designations::snomed(&mut tx, base, &member.code, false, &mut budget)
-                    .await?
+            let designations = if let Some(metadata) =
+                page.finite.as_ref().and_then(|p| p.get(member))
+            {
+                metadata
+                    .designations
+                    .iter()
+                    .filter(|d| options.designation_matches(d))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                let base:uuid::Uuid=sqlx::query_scalar("SELECT id FROM code_systems WHERE url=$1 AND version IS NOT DISTINCT FROM $2 ORDER BY updated_at DESC,id LIMIT 1").bind(&member.system).bind(&member.version).fetch_one(&mut *tx).await?;
+                let mut designations: Vec<_> =
+                    if member.system == term_squid_core::rxnorm::SYSTEM {
+                        super::designations::projected(&mut tx, base, &member.code, &mut budget)
+                            .await?
+                    } else {
+                        super::designations::snomed(&mut tx, base, &member.code, false, &mut budget)
+                            .await?
+                    }
                     .into_iter()
                     .filter(|d| options.designation_matches(d))
                     .collect();
-            super::designations::extend(
-                &mut designations,
-                super::supplements::designations(
-                    &mut tx,
-                    base,
-                    &member.code,
-                    options.date.as_deref(),
-                    &mut budget,
-                )
-                .await?
-                .into_iter()
-                .filter(|d| options.designation_matches(d))
-                .collect(),
-            )?;
+                super::designations::extend(
+                    &mut designations,
+                    super::supplements::designations(
+                        &mut tx,
+                        base,
+                        &member.code,
+                        options.date.as_deref(),
+                        &mut budget,
+                    )
+                    .await?
+                    .into_iter()
+                    .filter(|d| options.designation_matches(d))
+                    .collect(),
+                )?;
+                designations
+            };
             if !designations.is_empty() {
                 value["designation"] = designations.into();
             }
@@ -130,17 +150,31 @@ pub(super) async fn run(
             ));
         }
         let mut groups: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
-        for value in &contains {
-            groups
-                .entry((
-                    value["system"].as_str().unwrap().to_owned(),
-                    value["version"].as_str().map(str::to_owned),
-                ))
-                .or_default()
-                .push(value["code"].as_str().unwrap().to_owned());
-        }
         let mut parents = BTreeMap::new();
-        let mut edges = 0;
+        for member in &page.members {
+            if let Some(metadata) = page.finite.as_ref().and_then(|p| p.get(member)) {
+                if let Some(parent) = &metadata.parent {
+                    parents.insert(
+                        (
+                            member.system.clone(),
+                            member.version.clone(),
+                            member.code.clone(),
+                        ),
+                        (
+                            member.system.clone(),
+                            member.version.clone(),
+                            parent.clone(),
+                        ),
+                    );
+                }
+                continue;
+            }
+            groups
+                .entry((member.system.clone(), member.version.clone()))
+                .or_default()
+                .push(member.code.clone());
+        }
+        let mut edges = parents.len();
         for ((system, version), codes) in groups {
             let rows:Vec<(String,String)>=sqlx::query_as("SELECT r.source_code,r.destination_code FROM code_systems s JOIN snomed_relationships r ON r.code_system_id=s.id WHERE s.url=$1 AND s.version IS NOT DISTINCT FROM $2 AND r.active AND r.type_id='116680003' AND r.characteristic_type_id='900000000000011006' AND r.source_code=ANY($3::text[]) AND r.destination_code=ANY($3::text[]) ORDER BY 1,2 LIMIT 100001").bind(&system).bind(&version).bind(codes).fetch_all(&mut *tx).await?;
             edges += rows.len();

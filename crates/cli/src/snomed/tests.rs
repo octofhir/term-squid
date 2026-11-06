@@ -3,6 +3,9 @@
 use super::*;
 use serde_json::{json, Value};
 
+#[path = "simple_refset_tests.rs"]
+mod simple_refset_tests;
+
 struct Fixture {
     root: PathBuf,
     manifest: Value,

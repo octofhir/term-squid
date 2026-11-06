@@ -189,6 +189,10 @@ impl PostgresStore {
         self.generations.stats()
     }
     #[cfg(test)]
+    pub(crate) fn generation_buffer_usage(&self) -> (usize, usize, usize) {
+        self.generations.buffer_usage()
+    }
+    #[cfg(test)]
     pub(crate) async fn pause_concept_preparation(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.concepts.pause().await
     }
@@ -232,6 +236,12 @@ impl PostgresStore {
             }
             if row.native_provider.as_deref() == Some("loinc-csv") {
                 term_squid_core::loinc::require_primary_code(code)?;
+            }
+            if row.native_provider.as_deref() == Some("rxnorm-rrf") {
+                term_squid_core::rxnorm::require_code(code)?;
+                if row.code.is_none() {
+                    return Err(super::native_valueset::unsupported("RXCUI is outside the loaded active RxNorm projection; historical existence is unavailable"));
+                }
             }
         }
         #[cfg(test)]
@@ -672,6 +682,7 @@ impl TerminologyStore for PostgresStore {
             let canonical = term_squid_core::Canonical::parse(request.url, request.version)?;
             term_squid_core::snomed::implicit_definition(&canonical)?.is_some()
                 || term_squid_core::loinc::implicit(&canonical)?.is_some()
+                || term_squid_core::rxnorm::implicit(&canonical)?.is_some()
         } else {
             false
         };
@@ -689,12 +700,13 @@ impl TerminologyStore for PostgresStore {
         }
         // Cancellation releases admission and work permits without detached preparation.
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let _read = self
+            let read = self
                 .native_reads
-                .acquire()
+                .clone()
+                .acquire_owned()
                 .await
                 .map_err(|_| AppError::Overloaded)?;
-            super::native_valueset::query(&self.pool, request, operation).await
+            super::native_valueset::query(&self.pool, request, operation, read).await
         })
         .await
         .map_err(|_| AppError::Overloaded)?

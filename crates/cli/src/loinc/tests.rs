@@ -1,4 +1,7 @@
 //! Original generated primary-table fixtures; no licensed content or benchmark pool rows.
+#[path = "primary_link_tests.rs"]
+mod primary_links;
+
 use super::*;
 use serde_json::json;
 

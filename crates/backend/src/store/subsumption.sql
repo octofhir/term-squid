@@ -32,7 +32,7 @@ WITH RECURSIVE selected AS MATERIALIZED (
     -- Recursive UNION deduplicates cycles; only this bounded consumer reads it.
     SELECT side, code FROM walk LIMIT 8193
 )
-SELECT s.url, s.version, s.native_provider, (COALESCE(s.content_mode = 'complete', false) OR s.native_provider IS NOT NULL) AS complete, s.hierarchy_meaning, a.code AS code_a, b.code AS code_b,
+SELECT s.url, s.version, s.native_provider, (s.native_provider IS DISTINCT FROM 'rxnorm-rrf' AND (COALESCE(s.content_mode = 'complete', false) OR s.native_provider IS NOT NULL)) AS complete, s.hierarchy_meaning, a.code AS code_a, b.code AS code_b,
        CASE WHEN s.hierarchy_meaning = 'is-a' AND a.code <> b.code THEN
            CASE WHEN s.native_provider = 'snomed-rf2' THEN
                CASE WHEN EXISTS (SELECT 1 FROM bounded WHERE side = 1 AND code = a.code) THEN true

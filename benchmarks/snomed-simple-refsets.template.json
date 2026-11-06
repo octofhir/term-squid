@@ -1,0 +1,35 @@
+{
+  "format": "snomed-rf2-snapshot-v1",
+  "completeSnapshot": false,
+  "editionModule": "900000000000207008",
+  "release": "20260201",
+  "dialect": "900000000000509007",
+  "language": "en",
+  "sources": {
+    "concepts": {
+      "path": "Snapshot/Terminology/sct2_Concept_Snapshot_INT_20260201.txt",
+      "sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+    },
+    "descriptions": {
+      "path": "Snapshot/Terminology/sct2_Description_Snapshot-en_INT_20260201.txt",
+      "sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+    },
+    "relationships": {
+      "path": "Snapshot/Terminology/sct2_Relationship_Snapshot_INT_20260201.txt",
+      "sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+    },
+    "language": {
+      "path": "Snapshot/Refset/Language/der2_cRefset_LanguageSnapshot-en_INT_20260201.txt",
+      "sha256": "REPLACE_WITH_LOWERCASE_SHA256"
+    }
+  },
+  "simpleRefsets": {
+    "path": "Snapshot/Refset/Content/der2_Refset_SimpleSnapshot_INT_20260201.txt",
+    "sha256": "REPLACE_WITH_LOWERCASE_SIMPLE_SNAPSHOT_SHA256",
+    "expectedRows": 0,
+    "release": "20260201",
+    "completeSnapshot": false,
+    "conceptOnly": false,
+    "refsetIds": ["REPLACE_WITH_SORTED_DECLARED_CONCEPT_REFSET_IDS"]
+  }
+}

@@ -31,6 +31,8 @@ pub struct ValueSetPage {
     pub resource: Value,
     pub total: i64,
     pub members: Vec<Member>,
+    /// Page-local labels and compact source knowledge for finite leaves of a mixed plan.
+    pub(crate) finite: Option<super::finite_bridge::Page>,
 }
 pub enum ValueSetResult {
     Finite(ExpandedValueSet),

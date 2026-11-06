@@ -5,7 +5,9 @@ mod config;
 mod database;
 mod error;
 mod models;
+mod readiness;
 mod store;
+mod transport;
 
 use anyhow::Result;
 use axum::{
@@ -17,7 +19,7 @@ use config::Config;
 use rust_embed::Embed;
 use std::sync::Arc;
 use store::{PostgresStore, TerminologyStore};
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Embed)]
@@ -80,6 +82,7 @@ async fn main() -> Result<()> {
         }
     };
     let public = api::create_router(store)
+        .merge(readiness::router(pool.clone()))
         .merge(catalog::router(pool))
         .layer(CorsLayer::permissive());
     let app = public
@@ -88,7 +91,7 @@ async fn main() -> Result<()> {
         .layer(
             tower::ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(CompressionLayer::new()),
+                .layer(transport::TransportLayer),
         );
 
     // Start server

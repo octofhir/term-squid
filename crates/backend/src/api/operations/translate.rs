@@ -451,17 +451,14 @@ fn finish_answers(
                 let mut coding =
                     Coding::new(product.system.as_deref().unwrap_or(""), &product.code);
                 coding.system = product.system;
+                coding.version = product.version;
                 coding.display = product.display;
-                let mut value = Parameter::coding("concept", coding.clone());
-                value.value = Some(ParameterValue::ValueCodeableConcept(
-                    crate::api::parameters::CodeableConcept {
-                        coding: Some(vec![coding]),
-                        text: None,
-                    },
-                ));
                 parts.push(Parameter::part(
                     "product",
-                    vec![Parameter::uri("element", product.element), value],
+                    vec![
+                        Parameter::uri("element", product.element),
+                        Parameter::coding("concept", coding),
+                    ],
                 ));
             }
             Parameter::part("match", parts)

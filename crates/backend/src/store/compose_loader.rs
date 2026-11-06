@@ -52,6 +52,88 @@ pub(super) async fn load_options(
     )
     .await
 }
+
+/// Load only a selection's finite source. Its imported sets remain in the hybrid SQL graph.
+/// Native definitions have already passed their input/term limits, so this internal leaf
+/// is not subject to the separate client inline-resource size limit or public provenance.
+pub(super) async fn load_selection(
+    tx: &mut Transaction<'_, Postgres>,
+    selection: &term_squid_core::Selection,
+    system_context: Option<(&str, &str)>,
+    options: Option<&super::ExpansionOptions>,
+    budget: &mut i64,
+) -> Result<Loaded, AppError> {
+    let root = Canonical::parse(
+        &format!("urn:term-squid:finite-leaf:{}", uuid::Uuid::new_v4()),
+        None,
+    )?;
+    let mut leaf = serde_json::json!({
+        "concept": selection.concept.iter().map(|concept| {
+            let mut value = serde_json::json!({"code":concept.code});
+            if let Some(display) = &concept.display {
+                value["display"] = display.clone().into();
+            }
+            value
+        }).collect::<Vec<_>>(),
+        "filter": selection.filter.iter().map(|filter| serde_json::json!({
+            "property":filter.property,"op":filter.op,"value":filter.value
+        })).collect::<Vec<_>>()
+    });
+    if let Some(system) = &selection.system {
+        leaf["system"] = system.clone().into();
+    }
+    if let Some(version) = &selection.version {
+        leaf["version"] = version.clone().into();
+    }
+    let resource = serde_json::json!({
+        "resourceType":"ValueSet","url":root.url,"compose":{"include":[leaf]}
+    });
+    let inline = InlineValueSet {
+        resource,
+        canonical: root.clone(),
+        fingerprint: [0; 32],
+        bytes: 0,
+    };
+    load_root_options(
+        tx,
+        root,
+        None,
+        system_context,
+        Some(inline),
+        budget,
+        options,
+    )
+    .await
+}
+
+/// Count source concepts, not just selected members, for aggregate hybrid admission.
+pub(super) fn source_concept_count(loaded: &Loaded) -> Result<usize, AppError> {
+    let mut count = 0_usize;
+    for resource in loaded.raw_systems.values() {
+        let mut pending = resource["concept"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|concept| (concept, 0))
+            .collect::<Vec<_>>();
+        while let Some((concept, depth)) = pending.pop() {
+            count = count.saturating_add(1);
+            if count > term_squid_core::MAX_CONCEPTS || depth > term_squid_core::MAX_DEPTH {
+                return Err(AppError::Terminology(term_squid_core::Error(
+                    "Hybrid finite source concept or depth limit exceeded".into(),
+                )));
+            }
+            pending.extend(
+                concept["concept"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|child| (child, depth + 1)),
+            );
+        }
+    }
+    Ok(count)
+}
 pub(super) async fn load_root(
     tx: &mut Transaction<'_, Postgres>,
     root: Canonical,
@@ -95,6 +177,7 @@ async fn load_root_options(
         }
         if term_squid_core::snomed::implicit(&key)?.is_some()
             || term_squid_core::loinc::implicit(&key)?.is_some()
+            || term_squid_core::rxnorm::implicit(&key)?.is_some()
         {
             return Err(AppError::NativeValueSet);
         }
@@ -167,6 +250,22 @@ async fn load_root_options(
             })?)
             .map_err(|e| AppError::BadRequest(format!("Invalid compose: {e}")))?;
         ucum.collect(&compose, system_context)?;
+        // SNOMED `concept in` names a refset, not the finite engine's literal
+        // code list. Route it through source-aware resolution even for a stored
+        // finite edition, which must fail rather than invent refset knowledge.
+        for selection in compose.include.iter().chain(&compose.exclude) {
+            if let Some(system) = &selection.system {
+                if Canonical::parse(system, selection.version.as_deref())?.url
+                    == term_squid_core::snomed::SYSTEM
+                    && selection.filter.iter().any(|filter| {
+                        filter.property == "constraint"
+                            || filter.property == "concept" && filter.op == "in"
+                    })
+                {
+                    return Err(AppError::NativeValueSet);
+                }
+            }
+        }
         let (systems, imports) = compose.references()?;
         pending.extend(imports);
         for system in systems {

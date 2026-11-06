@@ -11,6 +11,8 @@
 
 The standalone R4 product API, branded public UI and authenticated administration are implemented. The six declared terminology operations cover all 70 pinned top-level R4 inputs, with explicit provider, registry and resource limits. See the [API implementation report](docs/API_IMPLEMENTATION_REPORT.md) and [requirements matrix](docs/API_REQUIREMENTS.md) for current evidence. R5/R6 aliases do not establish support for those releases.
 
+The [latest R4 correctness/performance checkpoint](docs/SPEC_SPEED_REPORT.md) requires explicit ConceptMap equivalence, resolves dependency/product namespaces and returns versioned product `Coding` correctly. Fresh exact hierarchy hints, bounded queue reuse and a negotiated 1 KiB gzip threshold reduce temporary allocation traffic. Measured throughput still has regressions against the earlier baseline. Full R4 conformance, Unicode/default-case consistency and clinical composite leadership remain open.
+
 See the [product development plan](docs/PRODUCT_PLAN.md) and [local benchmark instructions](benchmarks/README.md). Known correctness gaps are tracked there and exposed by semantic benchmark preflight.
 
 ## Features
@@ -21,7 +23,9 @@ See the [product development plan](docs/PRODUCT_PLAN.md) and [local benchmark in
 - **FHIR Operations** - $lookup, CodeSystem/ValueSet $validate-code, $subsumes, $expand and $translate, including typed inputs, dates/languages, bounded inline resources and version/context options
 - ✅ **PostgreSQL Storage** - Efficient storage with JSONB and full-text search
 - ✅ **Package Loader CLI** - Import official FHIR packages from packages.fhir.org
-- **Clinical Terminology Import** - Import tooling exists; complete LOINC/UCUM provider behavior is planned
+- **Native clinical imports** - Checksummed RF2 Snapshots, LOINC primary CSV and full-monthly RxNorm RRF with atomic activation; accessory/history limits remain explicit
+- **Operational readiness** - Fresh bounded `/ready` storage/migration checks, separate from database-free `/health`
+- **UCUM tools** - Grammar-backed conversion and canonical forms in the reusable library and database-free CLI
 - ✅ **Modern Web UI** - React 19 with the actual OctoFHIR UI kit, public catalogs and protected administration
 - ✅ **Embedded Deployment** - Single binary with embedded frontend assets
 - ✅ **Async-first Architecture** - High-performance async Rust with Tokio
@@ -288,9 +292,57 @@ Returns translated codes with equivalence relationships.
 # Health check
 GET /health
 
+# Fresh schema/database readiness (200 or 503; not clinical coverage)
+GET /ready
+
 # Server statistics
 GET /stats
 ```
+
+Readiness requires all compiled migrations, 19 enabled generation-tracking triggers and consistent native release registrations, including optional source descriptors and the bounded SNOMED refset registry. Limits: two seconds overall, one-second SQL statements and four probes. A loaded clinical corpus and administration tables are not required. Apply migrations through `20261106000003_loinc_primary_links` and `20261106000004_snomed_simple_refsets` before the updated backend. See [the readiness report](docs/RXNORM_READINESS_REPORT.md) and [the primary-link/refset report](docs/LOINC_PARTS_SNOMED_REFSETS_REPORT.md) for scope and upgrades.
+
+### Bounded SNOMED ECL
+
+Native RF2 ValueSets accept `constraint = [ECL]` and implicit `http://snomed.info/sct?fhir_vs=ecl/[percent-encoded ECL]` URLs, including selected edition/version contexts. Encode the ECL segment once; form-style `+` is not a space. The subset covers active precoordinated concepts, `*`, `<`, `<<`, `>`, `>>`, `<!`, `<<!`, `>!`, `>>!`, and `AND`/`OR`/`MINUS` with parentheses. Mixed operators and repeated `MINUS` require explicit grouping; hierarchy operators take scalar focuses, not sets or wildcards. Labels are ignored descriptions, not validated displays.
+
+Only active inferred is-a paths participate, including active intermediate concepts. Unknown or inactive focuses fail explicitly. Limits include 4 KiB of ECL, 32 grouping levels, 128 expression nodes and sixteen hierarchy walks shared with other native filters. Scalar/hierarchy ECL uses existing RF2 projections without an additional source. Refinements, postcoordination and historical associations remain unsupported. See [the ECL/relationship report](docs/ECL_RXNORM_RELATIONS_REPORT.md).
+
+Optional `simpleRefsets` in the RF2 manifest adds declared concept-only Simple refsets. Its descriptor supplies `path`, lowercase `sha256`, `expectedRows` (including zero), the same `release` as the base Snapshot, `completeSnapshot: true`, `conceptOnly: true`, and 1–64 lexicographically sorted unique `refsetIds`. Declare even an empty refset explicitly. The file must be a same-release `SimpleSnapshot` with the six standard columns; Full/Delta files and nonconcept membership are rejected. Each declared refset must be an active concept with a bounded active inferred path to Simple type reference set `446609009`; attestation alone is not type proof.
+
+Loaded declarations support `concept in [refset-id]`, implicit `http://snomed.info/sct?fhir_vs=refset/[refset-id]` URLs and scalar ECL `^ [refset-id]`, with normal edition/version selection. Missing or undeclared sources return 422, including empty queries and early membership matches. An explicitly loaded empty refset gives an empty result. Ordinary refset selection follows active member rows, which may reference inactive concepts; ECL still restricts results to active concepts. Global refset enumeration, nonconcept/map refsets, selector or field projections, refinements and historical associations remain unsupported. Select the source cohort on first publication: absent/null preserves legacy identity, while later enrichment of an immutable edition conflicts. See [the primary-link/refset report](docs/LOINC_PARTS_SNOMED_REFSETS_REPORT.md).
+
+### LOINC coded primary axes
+
+The native `import-loinc --manifest [path]` route accepts optional `primaryLinks` alongside `Loinc.csv`. The descriptor supplies `path` to `LoincPartLink_Primary.csv`, lowercase `sha256`, `expectedRows`, the same `version` as the main table and `completeFile: true`. Import the complete same-edition cohort on first publication; adding a file to an immutable edition later is a conflict. Omitting it, or using null, preserves the old main-table fingerprint. Native clinical imports remain CLI-only.
+
+Loaded primary links expose `COMPONENT`, `PROPERTY`, `TIME_ASPCT`, `SYSTEM`, `SCALE_TYP` and `METHOD_TYP` as FHIR `code` properties with `valueCode: LP…`. The existing `raw-*` properties retain verbatim `valueString` labels. Five primary axes are required for every main-table term, plus Method exactly when specified; URI/type and source labels must agree. All source rows, including Radiology/DocumentOntology and foreign-system links, remain raw, but only eligible Primary links supply these six coded properties.
+
+The six axes support `=`; bounded `in` (at most 256 LP literals) and `exists` are explicit server extensions. LP prefixes compare ASCII-case-insensitively and are returned in canonical uppercase. A valid unknown LP literal gives no matching primary terms; it is not a Part-existence decision. Expansion still requires explicit primary concepts or `source-table=Loinc.csv`; an axis filter does not establish that scope. Missing source returns 422 for coded filters or an explicit coded-property lookup, even for `count=0`. With a loaded file, an unspecified Method is simply absent, and `METHOD_TYP exists false` can select it. Default/`*` lookup returns available properties without requiring the optional file.
+
+This does not load a Part registry or enable Part lookup, accessory/all-code enumeration, regex filters, hierarchy or implicit `/vs/LP…` sets. See [the primary-link/refset report](docs/LOINC_PARTS_SNOMED_REFSETS_REPORT.md).
+
+### RxNorm import and UCUM tools
+
+```sh
+term-squid-cli --database-url "$DATABASE_URL" migrate
+term-squid-cli --database-url "$DATABASE_URL" import-rxnorm --manifest .benchmarks/clinical/rxnorm/manifest.json --dry-run
+term-squid-cli --database-url "$DATABASE_URL" import-rxnorm --manifest .benchmarks/clinical/rxnorm/manifest.json
+# These commands need no database:
+term-squid-cli ucum-convert --value -40 --from Cel --to '[degF]'
+term-squid-cli ucum-canonical --code km
+```
+
+Copy/fill the [RxNorm template](benchmarks/rxnorm-rrf.template.json) for an independently obtained full monthly `RXNCONSO.RRF`. Known current-active normalized codes, aliases, source/TTY filters and scoped mixed ValueSets are supported; absent historical knowledge fails explicitly. The template intentionally fails unchanged; generated fixtures are not clinical releases.
+
+Optional `semanticTypes` (`RXNSTY.RRF`) and `attributes` (`RXNSAT.RRF`) manifest descriptors add semantic types and selected NDC attributes. Each descriptor supplies `path`, lowercase `sha256`, `expectedRows`, the same `version` as CONSO and `fullMonthly: true`. These sources require migration `20261106000001_rxnorm_auxiliary`. Include the complete source cohort on the edition's first import: adding files to an already published edition is an immutable conflict, not an in-place enrichment. Native imports remain CLI-only.
+
+The `STY` filter supports `=` and `in`, defaults to TUI (`T200` or `TUI:T200`), and accepts explicit `STN:A1.3.3` or `STY:Clinical Drug` qualifiers. One list cannot mix qualifier families. The custom `NDC` property/filter (`urn:term-squid:rxnorm:NDC`) uses exact current NLM-curated 11-digit values for supported active product atoms; leading zeros are preserved. No padding, formatting conversion or inferred drug mapping is performed.
+
+Explicit lookup requests for `TUI`/`STN`/`STY` or `NDC`, and their filters, return 422 when the required file is unavailable. A loaded file with no value for a known active concept means known absence, not an unavailable source. Semantic/NDC files alone do not provide relationship or historical knowledge. See [the auxiliary-source report](docs/RXNORM_AUXILIARY_REPORT.md) for scope, examples and limits.
+
+Optional `relationships` imports `RXNREL.RRF` with the same descriptor fields and same-release/full-monthly requirements. Select it on first publication; it cannot be appended to an immutable edition later. Apply all migrations through `20261106000002_rxnorm_relationships` before the updated backend.
+
+Relationship filters support the seven declared `REL` codes and 28 `RELA` names as properties, with `=`/`in` and explicit `CUI:` or `AUI:` targets. They select candidate endpoint 1 anchored at endpoint 2: the source describes endpoint 2's relation **to** endpoint 1, not intuitive forward adjacency. Foreign-SAB facts can match; only rows with empty or `N` suppression participate. A missing file returns 422, while a loaded file with no matching fact gives a normal empty result. This does not add RxNorm history, subsumption, UNII, automatic maps or another FHIR operation. See [the ECL/relationship report](docs/ECL_RXNORM_RELATIONS_REPORT.md) for the exact supported names and bounds.
 
 ## Architecture
 
@@ -303,7 +355,7 @@ GET /stats
 - rust-embed - Compile-time asset embedding
 
 **Frontend:**
-- SolidJS - Reactive UI framework
+- React 19 - Public browsing and standalone administration with the actual OctoFHIR UI kit
 - TypeScript - Type-safe JavaScript
 - Vite - Fast build tool
 - CSS Modules - Scoped styling

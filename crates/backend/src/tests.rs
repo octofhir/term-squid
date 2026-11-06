@@ -8,7 +8,12 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn request(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn request(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (u16, Value) {
     let response = app
         .clone()
         .oneshot(
@@ -893,7 +898,7 @@ async fn prepared_translation_versions_updates_and_concurrency() {
         "b"
     );
     let mut writer = pool.begin().await.unwrap();
-    let updated = json!({"resourceType":"ConceptMap","url":"urn:map","version":"1","group":[{"source":"urn:s","target":"urn:t","element":[{"code":"new","display":"New source","target":[{"code":"future","display":"New target"}]}]}]});
+    let updated = json!({"resourceType":"ConceptMap","url":"urn:map","version":"1","group":[{"source":"urn:s","target":"urn:t","element":[{"code":"new","display":"New source","target":[{"code":"future","display":"New target","equivalence":"equivalent"}]}]}]});
     sqlx::query("UPDATE concept_maps SET content=$1 WHERE id=$2")
         .bind(sqlx::types::Json(&updated))
         .bind(v1)
@@ -3003,11 +3008,30 @@ async fn native_snomed_ancestor_limit_never_returns_a_partial_answer() {
 #[path = "native_valueset_tests.rs"]
 mod native_valueset_tests;
 
+#[path = "native_search_tests.rs"]
+mod native_search_tests;
+
+#[path = "exact_hierarchy_tests.rs"]
+mod exact_hierarchy_tests;
+#[path = "snomed_ecl_tests.rs"]
+mod snomed_ecl_tests;
+#[path = "snomed_refset_tests.rs"]
+mod snomed_refset_tests;
+
+#[path = "mixed_valueset_tests.rs"]
+mod mixed_valueset_tests;
+
+#[path = "rxnorm_provider_tests.rs"]
+mod rxnorm_provider_tests;
+
 #[path = "implicit_membership_tests.rs"]
 mod implicit_membership_tests;
 
 #[path = "loinc_provider_tests.rs"]
 mod loinc_provider_tests;
+
+#[path = "loinc_primary_link_tests.rs"]
+mod loinc_primary_link_tests;
 
 #[path = "lookup_property_tests.rs"]
 mod lookup_property_tests;
@@ -3017,6 +3041,9 @@ mod coded_input_tests;
 
 #[path = "api_completion_tests.rs"]
 mod api_completion_tests;
+
+#[path = "translation_safety_tests.rs"]
+mod translation_safety_tests;
 
 #[path = "ecosystem_tests.rs"]
 mod ecosystem_tests;

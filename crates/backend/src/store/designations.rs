@@ -42,6 +42,51 @@ pub(super) async fn snomed(
     decode(rows, budget)
 }
 
+/// Native providers may publish bounded, real source labels in the shared projection.
+pub(super) async fn projected(
+    tx: &mut Transaction<'_, Postgres>,
+    base: Uuid,
+    code: &str,
+    budget: &mut i64,
+) -> Result<Vec<Value>, AppError> {
+    let rows: Vec<LabelRow> = sqlx::query_as("WITH labels AS MATERIALIZED (SELECT d.ordinal,d.label FROM concepts c CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.designations,'[]')) WITH ORDINALITY d(label,ordinal) WHERE c.code_system_id=$1 AND c.code=$2 ORDER BY d.ordinal LIMIT 257), sized AS (SELECT ordinal,label,octet_length(label::text)::bigint AS bytes FROM labels) SELECT CASE WHEN sum(bytes) OVER ()<=$3 THEN label END,bytes FROM sized ORDER BY ordinal")
+        .bind(base).bind(code).bind(*budget).fetch_all(&mut **tx).await?;
+    decode(rows, budget)
+}
+
+/// English source aliases validate displays but cannot replace the normalized primary.
+/// An explicit display-use supplement or a more-specific translation may select a display.
+pub(super) fn rxnorm_display<'a>(
+    primary: Option<&'a str>,
+    designations: &'a [Value],
+    language: &str,
+) -> Option<&'a str> {
+    let range = super::expansion::display_language_range(designations, language);
+    if language
+        .split('-')
+        .next()
+        .is_some_and(|base| base.eq_ignore_ascii_case("en"))
+        && range.is_none_or(|range| range.eq_ignore_ascii_case("en"))
+    {
+        return designations
+            .iter()
+            .filter(|designation| {
+                designation["use"]["code"] == "display"
+                    && designation["language"]
+                        .as_str()
+                        .is_some_and(|actual| super::options::language_matches("en", actual))
+            })
+            .min_by_key(|designation| {
+                designation["language"]
+                    .as_str()
+                    .is_none_or(|actual| !actual.eq_ignore_ascii_case("en"))
+            })
+            .and_then(|designation| designation["value"].as_str())
+            .or(primary);
+    }
+    super::expansion::preferred(designations, language)
+}
+
 /// Base and supplement labels share one per-concept count, including native sources.
 pub(super) fn extend(target: &mut Vec<Value>, additional: Vec<Value>) -> Result<(), AppError> {
     if target.len().saturating_add(additional.len()) > 256 {

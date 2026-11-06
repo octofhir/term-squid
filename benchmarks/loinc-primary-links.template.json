@@ -1,0 +1,17 @@
+{
+  "format": "loinc-csv-v1",
+  "version": "2.82",
+  "completeTable": false,
+  "expectedConcepts": 0,
+  "source": {
+    "path": "Loinc.csv",
+    "sha256": "REPLACE_WITH_LOWERCASE_MAIN_TABLE_SHA256"
+  },
+  "primaryLinks": {
+    "path": "LoincPartLink_Primary.csv",
+    "sha256": "REPLACE_WITH_LOWERCASE_PRIMARY_LINK_SHA256",
+    "expectedRows": 0,
+    "version": "2.82",
+    "completeFile": false
+  }
+}

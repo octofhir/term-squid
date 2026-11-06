@@ -130,7 +130,7 @@ impl ValidationAnswer {
                 system,
                 input,
                 &page.sources,
-                None,
+                page.finite.as_ref().map(|finite| &finite.knowledge),
             ),
         }
     }
@@ -544,6 +544,12 @@ pub(super) async fn run(
                     if resolved.native_provider.as_deref() == Some("snomed-rf2") {
                         term_squid_core::snomed::reject_expression(candidate.code)?;
                     }
+                    if resolved.native_provider.as_deref() == Some("rxnorm-rrf") {
+                        term_squid_core::rxnorm::require_code(candidate.code)?;
+                        if resolved.code.is_none() {
+                            return Err(native_valueset::unsupported("RXCUI is outside the loaded active RxNorm projection; historical existence is unavailable"));
+                        }
+                    }
                     if resolved.content_mode.as_deref() == Some("supplement") {
                         return Err(AppError::BadRequest(
                             "A supplement URL cannot identify Coding.system".into(),
@@ -610,7 +616,7 @@ pub(super) async fn run(
                     } else {
                         ValidationLabels::default()
                     };
-                    let mut answer = localized_answer(
+                    let mut answer = localized_answer_case(
                         resolved.display.as_deref(),
                         resolved.version.as_deref(),
                         candidate.display,
@@ -618,6 +624,7 @@ pub(super) async fn run(
                         allow_abstract,
                         labels.view(),
                         options.language.as_deref(),
+                        resolved.url == term_squid_core::rxnorm::SYSTEM,
                     )
                     .display_policy(options.lenient_display);
                     if options.coding_diagnostics {
@@ -658,6 +665,7 @@ pub(super) async fn run(
                         let canonical = Canonical::parse(request.url, request.version)?;
                         term_squid_core::snomed::implicit_definition(&canonical)?.is_some()
                             || term_squid_core::loinc::implicit(&canonical)?.is_some()
+                || term_squid_core::rxnorm::implicit(&canonical)?.is_some()
                     };
                     let mut projected_labels = None;
                     let result = if implicit {
@@ -666,6 +674,7 @@ pub(super) async fn run(
                             request,
                             operation,
                             Some(&expansion_options),
+                            &mut metadata.permit,
                         )
                         .await?
                     } else {
@@ -709,6 +718,7 @@ pub(super) async fn run(
                                     request,
                                     operation,
                                     Some(&expansion_options),
+                                    &mut metadata.permit,
                                 )
                                 .await?
                             }
@@ -732,37 +742,50 @@ pub(super) async fn run(
                     let labels = if let Some(labels) = projected_labels {
                         labels
                     } else if options.language.is_some() || candidate.display.is_some() {
-                        let key = Canonical::parse(&member.system, member.version.as_deref())?;
-                        let id = super::selection::id(
-                            &mut tx,
-                            super::selection::Family::System,
-                            &key,
-                            None,
-                            None,
-                        )
-                        .await?;
-                        let provider: Option<String> = if super::transient::by_id(id).is_some() {
-                            None
+                        if let Some(labels) = match &result {
+                            ValueSetResult::Native(page) => {
+                                page.finite.as_ref().and_then(|finite| finite.get(member))
+                            }
+                            ValueSetResult::Finite(_) => None,
+                        } {
+                            ValidationLabels {
+                                primary: labels.primary.clone(),
+                                designations: labels.designations.clone(),
+                            }
                         } else {
-                            sqlx::query_scalar(
-                                "SELECT native_provider FROM code_systems WHERE id=$1",
+                            let key = Canonical::parse(&member.system, member.version.as_deref())?;
+                            let id = super::selection::id(
+                                &mut tx,
+                                super::selection::Family::System,
+                                &key,
+                                None,
+                                None,
                             )
-                            .bind(id)
-                            .fetch_one(&mut *tx)
+                            .await?;
+                            let provider: Option<String> = if super::transient::by_id(id).is_some()
+                            {
+                                None
+                            } else {
+                                sqlx::query_scalar(
+                                    "SELECT native_provider FROM code_systems WHERE id=$1",
+                                )
+                                .bind(id)
+                                .fetch_one(&mut *tx)
+                                .await?
+                            };
+                            labels(
+                                &mut tx,
+                                id,
+                                provider.as_deref(),
+                                &member.code,
+                                &mut metadata,
+                            )
                             .await?
-                        };
-                        labels(
-                            &mut tx,
-                            id,
-                            provider.as_deref(),
-                            &member.code,
-                            &mut metadata,
-                        )
-                        .await?
+                        }
                     } else {
                         ValidationLabels::default()
                     };
-                    let mut answer = localized_answer(
+                    let mut answer = localized_answer_case(
                         member.display.as_deref(),
                         member.version.as_deref(),
                         candidate.display,
@@ -770,6 +793,7 @@ pub(super) async fn run(
                         allow_abstract,
                         labels.view(),
                         options.language.as_deref(),
+                        member.system == term_squid_core::rxnorm::SYSTEM,
                     )
                     .display_policy(options.lenient_display);
                     if options.coding_diagnostics {
@@ -987,6 +1011,12 @@ async fn labels(
         });
     }
     if provider.is_some() {
+        let mut designations = if provider == Some("rxnorm-rrf") {
+            super::designations::projected(tx, id, code, &mut metadata.remaining).await?
+        } else {
+            Vec::new()
+        };
+        super::designations::extend(&mut designations, supplemental)?;
         let row: Option<(Option<String>, i64)> = sqlx::query_as(
             "SELECT CASE WHEN octet_length(COALESCE(display,''))<=$3 THEN display END,octet_length(COALESCE(display,''))::bigint FROM concepts WHERE code_system_id=$1 AND code=$2",
         )
@@ -1008,7 +1038,7 @@ async fn labels(
         };
         return Ok(ValidationLabels {
             primary,
-            designations: supplemental,
+            designations,
         });
     }
     let projected:Option<ProjectedLabels>=sqlx::query_as("SELECT CASE WHEN octet_length(COALESCE(display,''))<=$3 THEN display END,CASE WHEN designations IS NOT NULL AND octet_length(designations::text)+octet_length(COALESCE(display,''))<=$3 THEN designations END,COALESCE(octet_length(designations::text),0)::bigint+octet_length(COALESCE(display,'')),designations IS NULL FROM concepts WHERE code_system_id=$1 AND code=$2").bind(id).bind(code).bind(metadata.remaining).fetch_optional(&mut **tx).await?;
@@ -1084,11 +1114,42 @@ fn localized_answer(
     labels: LabelView<'_>,
     language: Option<&str>,
 ) -> ValidationAnswer {
+    localized_answer_case(
+        display,
+        version,
+        expected,
+        abstract_code,
+        allow_abstract,
+        labels,
+        language,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn localized_answer_case(
+    display: Option<&str>,
+    version: Option<&str>,
+    expected: Option<&str>,
+    abstract_code: bool,
+    allow_abstract: bool,
+    labels: LabelView<'_>,
+    language: Option<&str>,
+    case_insensitive: bool,
+) -> ValidationAnswer {
+    let equal = |left: &str, right: &str| {
+        left == right || case_insensitive && left.to_lowercase() == right.to_lowercase()
+    };
     let designations = labels.designations;
     let selected_language = language
         .and_then(|language| super::expansion::display_language_range(designations, language));
-    let preferred =
-        language.and_then(|language| super::expansion::preferred(designations, language));
+    let preferred = language.and_then(|language| {
+        if case_insensitive {
+            super::designations::rxnorm_display(display.or(labels.primary), designations, language)
+        } else {
+            super::expansion::preferred(designations, language)
+        }
+    });
     let mut answer = ValidationAnswer::member(
         preferred.or(display),
         version,
@@ -1096,13 +1157,26 @@ fn localized_answer(
         abstract_code,
         allow_abstract,
     );
+    if answer.failure == Some(ValidationFailure::Display)
+        && expected.is_some_and(|expected| {
+            preferred
+                .or(display)
+                .is_some_and(|actual| equal(actual, expected))
+        })
+    {
+        answer.valid = true;
+        answer.message = None;
+        answer.failure = None;
+    }
     let matching_designation = expected.is_some_and(|expected| {
-        if language.is_none() && labels.primary == Some(expected) {
+        if language.is_none() && labels.primary.is_some_and(|actual| equal(actual, expected)) {
             return true;
         }
 
         designations.iter().any(|d| {
-            d["value"] == expected
+            d["value"]
+                .as_str()
+                .is_some_and(|actual| equal(actual, expected))
                 && match language {
                     None => true,
                     Some(_) => selected_language.is_some_and(|range| {
@@ -1158,7 +1232,7 @@ fn inline_answer(
                     "Concept designations exceed 256 entries".into(),
                 ));
             }
-            let mut answer = localized_answer(
+            let mut answer = localized_answer_case(
                 concept.display.as_deref(),
                 system.canonical.version.as_deref(),
                 candidate.display,
@@ -1169,6 +1243,7 @@ fn inline_answer(
                     designations,
                 },
                 options.language.as_deref(),
+                system.canonical.url == term_squid_core::rxnorm::SYSTEM,
             )
             .display_policy(options.lenient_display);
             if options.coding_diagnostics {

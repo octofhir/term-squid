@@ -1,5 +1,7 @@
 //! Keep unsupported SNOMED expression handling separate from scalar code membership.
 use crate::{Error, Result};
+pub mod ecl;
+pub use ecl::Ecl;
 
 /// A complete RF2 identifier projection is not a post-coordination evaluator.
 pub fn reject_expression(code: &str) -> Result<()> {
@@ -32,10 +34,27 @@ mod tests {
 
 pub const SYSTEM: &str = "http://snomed.info/sct";
 pub const INTERNATIONAL: &str = "900000000000207008";
+pub const SIMPLE_REFSET_ROOT: &str = "446609009";
+
+/// A reference-set selector is a scalar SCTID, not a URL, list or expression.
+pub fn require_refset_code(code: &str) -> Result<()> {
+    if (6..=18).contains(&code.len())
+        && !code.starts_with('0')
+        && code.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        Ok(())
+    } else {
+        Err(Error(
+            "Expected a nonzero 6..18 digit SNOMED refset identifier".into(),
+        ))
+    }
+}
 
 /// A native filter describes a relation; it never enumerates a clinical release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeFilter {
+    Constraint(Ecl),
+    Refset(String),
     Hierarchy {
         anchor: String,
         ancestors: bool,
@@ -55,6 +74,13 @@ impl NativeFilter {
             op,
             value,
         } = filter;
+        if property == "constraint" && op == "=" {
+            return Ok(Self::Constraint(Ecl::parse(value)?));
+        }
+        if property == "concept" && op == "in" {
+            require_refset_code(value)?;
+            return Ok(Self::Refset(value.clone()));
+        }
         if property == "concept"
             && matches!(
                 op.as_str(),
@@ -119,6 +145,8 @@ pub fn is_edition_uri(version: &str) -> bool {
 pub struct ImplicitValueSet {
     pub system_version: Option<String>,
     pub ancestor: Option<String>,
+    pub constraint: Option<Ecl>,
+    pub refset: Option<String>,
 }
 impl ImplicitValueSet {
     /// Render the same FHIR template used for stored/inline compose evaluation.
@@ -132,6 +160,16 @@ impl ImplicitValueSet {
                 {"property":"concept","op":"is-a","value":ancestor}
             ]);
         }
+        if let Some(constraint) = &self.constraint {
+            selection["filter"] = serde_json::json!([
+                {"property":"constraint","op":"=","value":constraint.source()}
+            ]);
+        }
+        if let Some(refset) = &self.refset {
+            selection["filter"] = serde_json::json!([
+                {"property":"concept","op":"in","value":refset}
+            ]);
+        }
         let mut resource = serde_json::json!({"resourceType":"ValueSet","url":canonical.url,
             "status":"active","compose":{"include":[selection]}});
         if let Some(version) = &canonical.version {
@@ -142,7 +180,7 @@ impl ImplicitValueSet {
 }
 
 /// Recognize only the supported R4 implicit grammar without building a JSON resource.
-/// ECL/refsets remain explicit errors. Version conflict rules match `implicit`.
+/// Bounded ECL and declared concept refsets use the general provider.
 pub fn implicit_definition(canonical: &crate::Canonical) -> Result<Option<ImplicitValueSet>> {
     let Some((base, query)) = canonical.url.split_once('?') else {
         return Ok(None);
@@ -168,10 +206,21 @@ pub fn implicit_definition(canonical: &crate::Canonical) -> Result<Option<Implic
         }
         system_version = Some(version.clone());
     }
-    let ancestor = if query != "fhir_vs" {
+    let constraint = query
+        .strip_prefix("fhir_vs=ecl/")
+        .map(ecl::decode_implicit)
+        .transpose()?;
+    let refset = query
+        .strip_prefix("fhir_vs=refset/")
+        .map(|code| {
+            require_refset_code(code)?;
+            Ok::<_, Error>(code.to_owned())
+        })
+        .transpose()?;
+    let ancestor = if query != "fhir_vs" && constraint.is_none() && refset.is_none() {
         let anchor = query.strip_prefix("fhir_vs=isa/").ok_or_else(|| {
             Error(
-                "Unsupported SNOMED implicit ValueSet query (ECL/refsets require a provider)"
+                "Unsupported SNOMED implicit query; global refset enumeration requires complete registry coverage"
                     .into(),
             )
         })?;
@@ -183,6 +232,8 @@ pub fn implicit_definition(canonical: &crate::Canonical) -> Result<Option<Implic
     Ok(Some(ImplicitValueSet {
         system_version,
         ancestor,
+        constraint,
+        refset,
     }))
 }
 
@@ -196,13 +247,60 @@ mod native_tests {
     use super::*;
     use crate::{Canonical, Filter};
     #[test]
+    fn declared_concept_refset_selectors_preserve_edition_and_active_member_semantics() {
+        let filter = NativeFilter::parse(&Filter {
+            property: "concept".into(),
+            op: "in".into(),
+            value: "100001".into(),
+        })
+        .unwrap();
+        assert_eq!(filter, NativeFilter::Refset("100001".into()));
+        let url = format!("{SYSTEM}/{INTERNATIONAL}/version/20260201?fhir_vs=refset/100001");
+        let canonical = Canonical::parse(&url, None).unwrap();
+        let definition = implicit_definition(&canonical).unwrap().unwrap();
+        assert_eq!(definition.refset.as_deref(), Some("100001"));
+        assert!(definition.constraint.is_none() && definition.ancestor.is_none());
+        let resource = definition.resource(&canonical);
+        assert_eq!(resource["url"], url);
+        assert_eq!(
+            resource["compose"]["include"][0]["filter"][0],
+            serde_json::json!({"property":"concept","op":"in","value":"100001"})
+        );
+    }
+    #[test]
+    fn refset_namespace_is_scalar_and_never_implies_global_registry_coverage() {
+        for code in [
+            "",
+            "1",
+            "0100001",
+            "100001,100002",
+            "100001&extra=1",
+            "100001/foo",
+            "^100001",
+            "100001 |label|",
+        ] {
+            assert!(require_refset_code(code).is_err(), "{code}");
+            assert!(
+                Canonical::parse(&format!("{SYSTEM}?fhir_vs=refset/{code}"), None)
+                    .and_then(|canonical| implicit(&canonical))
+                    .is_err()
+            );
+        }
+        assert!(
+            implicit(&Canonical::parse(&format!("{SYSTEM}?fhir_vs=refset"), None).unwrap())
+                .is_err()
+        );
+    }
+    #[test]
     fn typed_implicit_definitions_preserve_release_selection_and_ancestors() {
         let default = Canonical::parse(&format!("{SYSTEM}?fhir_vs"), None).unwrap();
         assert_eq!(
             implicit_definition(&default).unwrap().unwrap(),
             ImplicitValueSet {
                 system_version: None,
-                ancestor: None
+                ancestor: None,
+                constraint: None,
+                refset: None,
             }
         );
         let edition = format!("{SYSTEM}/{INTERNATIONAL}");
@@ -255,6 +353,36 @@ mod native_tests {
         }
         let unrelated = Canonical::parse("urn:finite?fhir_vs", None).unwrap();
         assert!(implicit_definition(&unrelated).unwrap().is_none());
+    }
+    #[test]
+    fn bounded_ecl_implicit_keeps_uri_and_routes_a_constraint_not_the_whole_set() {
+        let version = format!("{SYSTEM}/{INTERNATIONAL}/version/20260201");
+        let url = format!("{version}?fhir_vs=ecl/%3C%3C%20100000%20%7Clabel%20%2B%20%26%7C");
+        let canonical = Canonical::parse(&url, None).unwrap();
+        let definition = implicit_definition(&canonical).unwrap().unwrap();
+        assert_eq!(definition.system_version.as_deref(), Some(version.as_str()));
+        assert!(definition.ancestor.is_none());
+        assert_eq!(
+            definition.constraint.as_ref().unwrap().source(),
+            "<< 100000 |label + &|"
+        );
+        let resource = definition.resource(&canonical);
+        assert_eq!(resource["url"], url);
+        assert_eq!(resource["compose"]["include"][0]["version"], version);
+        assert_eq!(
+            resource["compose"]["include"][0]["filter"][0]["property"],
+            "constraint"
+        );
+        assert_eq!(
+            resource["compose"]["include"][0]["filter"][0]["value"],
+            "<< 100000 |label + &|"
+        );
+        assert!(NativeFilter::parse(&Filter {
+            property: "constraint".into(),
+            op: "=".into(),
+            value: "<< 100000".into()
+        })
+        .is_ok());
     }
     #[test]
     fn implicit_grammar_versions_and_unsupported_are_explicit() {
